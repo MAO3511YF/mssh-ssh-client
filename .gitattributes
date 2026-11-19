@@ -1,0 +1,14 @@
+# 帮助 GitHub Linguist 正确识别项目语言（避免统计成 HTML 100%）
+*.rs    linguist-language=Rust
+*.ts    linguist-language=TypeScript
+*.tsx   linguist-language=TypeScript
+*.css   linguist-language=CSS
+*.json  linguist-language=JSON
+*.toml  linguist-language=TOML
+
+# 二进制与生成物不参与语言统计
+*.ttf   binary linguist-vendored
+*.ico   binary linguist-vendored
+*.icns  binary linguist-vendored
+*.png   binary linguist-vendored
+*.lock  linguist-generated
