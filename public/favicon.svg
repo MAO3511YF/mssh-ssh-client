@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="MSSH">
+  <title>MSSH</title>
+  <desc>粉色圆角方形，中间白色猫形字母 M</desc>
+  <defs>
+    <!-- 底色：从顶部浅粉渐变到底部品红 -->
+    <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="512" y1="0" x2="512" y2="1024">
+      <stop offset="0.009" stop-color="#feb1d1"/>
+      <stop offset="0.102" stop-color="#fda4ca"/>
+      <stop offset="0.174" stop-color="#fd9ec8"/>
+      <stop offset="0.246" stop-color="#fc99c2"/>
+      <stop offset="0.318" stop-color="#fb8db9"/>
+      <stop offset="0.426" stop-color="#f984b2"/>
+      <stop offset="0.534" stop-color="#f772a9"/>
+      <stop offset="0.678" stop-color="#f4639c"/>
+      <stop offset="0.821" stop-color="#f04d8e"/>
+      <stop offset="0.929" stop-color="#ec4286"/>
+      <stop offset="0.998" stop-color="#e93a80"/>
+    </linearGradient>
+
+    <!-- 前景白色：自上而下极轻微收暗 -->
+    <linearGradient id="fg" gradientUnits="userSpaceOnUse" x1="512" y1="0" x2="512" y2="1024">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.25" stop-color="#fefcfd"/>
+      <stop offset="0.5" stop-color="#fbf8fa"/>
+      <stop offset="0.75" stop-color="#f7f2f5"/>
+      <stop offset="1" stop-color="#f3edf1"/>
+    </linearGradient>
+
+    <!-- 白色笔画下方的柔和投影 -->
+    <filter id="soft" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="16" stdDeviation="15" flood-color="#a80d4c" flood-opacity="0.26"/>
+    </filter>
+  </defs>
+
+  <!-- 圆角方形底板 -->
+  <rect width="1024" height="1024" rx="290" fill="url(#bg)"/>
+
+  <!-- 胡须：先画，被 M 的竖腿压住 -->
+  <g fill="none" stroke="url(#fg)" stroke-width="16" stroke-linecap="round" filter="url(#soft)">
+    <path d="M191 563 L89 550"/>
+    <path d="M191 612 L89 612"/>
+    <path d="M191 660 L97 694"/>
+    <path d="M842 563 L938 550"/>
+    <path d="M842 612 L938 612"/>
+    <path d="M842 660 L933 694"/>
+  </g>
+
+  <!-- 主体 M：两条竖腿 + 顶部圆弧 + 中间 V -->
+  <path d="M227 720 L227 277
+           A82 82 0 0 1 374.6 227.8
+           L513 462
+           L651.4 227.8
+           A82 82 0 0 1 799 277
+           L799 720"
+        fill="none" stroke="url(#fg)" stroke-width="84"
+        stroke-linecap="round" stroke-linejoin="round" filter="url(#soft)"/>
+
+  <!-- 猫face：眼睛 > < 与嘴巴 -->
+  <g fill="none" stroke="url(#fg)" stroke-linecap="round" stroke-linejoin="round" filter="url(#soft)">
+    <path d="M347 564 L376 606 L347 648" stroke-width="24"/>
+    <path d="M678 564 L649 606 L678 648" stroke-width="24"/>
+    <path d="M481 611 L547 611" stroke-width="26"/>
+  </g>
+</svg>
