@@ -260,7 +260,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .session-type { font-size: var(--text-xs); color: var(--muted); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 4px; }
 .empty-list { padding: 24px 12px; text-align: center; color: var(--text-2); font-size: var(--text-sm); }
 .empty-list small { color: var(--muted); font-size: var(--text-xs); }
-.side-foot { flex: none; padding: 8px var(--sp-4); border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 5px; }
+/* 高度与右侧命令栏 .global-bar 保持一致（52px），让两条顶部分隔线齐平 */
+.side-foot { height: 52px; flex: none; padding: 0 var(--sp-4); border-top: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; gap: 3px; }
 .side-foot-item { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-xs); }
 .side-foot-item svg { opacity: .7; }
 
