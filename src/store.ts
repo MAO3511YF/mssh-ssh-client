@@ -23,7 +23,8 @@ const COMMANDS_KEY = "mssh.v2.commands";
 const FILES_KEY = "mssh.v2.editorFiles";
 const REMOTE_KEY = "mssh.v2.remote";
 const HISTORY_KEY = "mssh.v2.history";
-const LAYOUT_KEY = "mssh.v2.layout";
+// v3：左侧固定展开、不再有拖拽条；右侧监控面板默认收起，由顶栏按钮控制
+const LAYOUT_KEY = "mssh.v3.layout";
 const PREFS_KEY = "mssh.v2.preferences";
 
 function load<T>(key: string, fallback: T): T {
@@ -230,7 +231,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeId: null,
   panes: EMPTY_PANES,
   focusedPane: 0,
-  layout: load(LAYOUT_KEY, { leftCollapsed: false, rightCollapsed: false }),
+  layout: load(LAYOUT_KEY, { leftCollapsed: false, rightCollapsed: true }),
   preferences: { ...DEFAULT_PREFERENCES, ...load(PREFS_KEY, {}) },
   setPreference: (key, value) => {
     set((state) => {

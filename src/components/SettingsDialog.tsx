@@ -72,23 +72,6 @@ function NumberRow({ label, value, onChange, min, max }: {
   );
 }
 
-function SliderRow({ label, desc, value, min, max, step, onChange, preview }: {
-  label: string; desc?: string; value: number; min: number; max: number; step: number;
-  onChange: (v: number) => void; preview?: string;
-}) {
-  return (
-    <div className="pref-row">
-      <div className="pref-info"><b>{label}</b>{desc && <span>{desc}</span>}</div>
-      <div className="pref-slider">
-        {preview && <span className="rail-preview" style={{ background: preview }} />}
-        <input className="pref-range" type="range" min={min} max={max} step={step} value={value}
-          onChange={(e) => onChange(Number(e.target.value))} />
-        <span className="pref-range-val">{value}</span>
-      </div>
-    </div>
-  );
-}
-
 function Choice<T extends string>({ value, options, onChange }: {
   value: T; options: { v: T; label: string }[]; onChange: (v: T) => void;
 }) {
@@ -254,37 +237,6 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
                       </div>
                     ))}
                   </div>
-                </section>
-
-                <section className="theme-section">
-                  <h3 className="theme-section-title">侧栏分隔条</h3>
-                  <SliderRow
-                    label="颜色深浅"
-                    desc="分隔条颜色＝主题强调色按此比例混入面板色，数值越大越深"
-                    value={preferences.railTint ?? 20}
-                    min={0} max={60} step={2}
-                    onChange={(v) => setPref("railTint", v)}
-                    preview={`color-mix(in srgb, var(--accent) ${preferences.railTint ?? 20}%, var(--panel))`}
-                  />
-                  <div className="pref-row">
-                    <div className="pref-info"><b>宽度</b><span>左右两条分隔条的宽度</span></div>
-                    <Choice
-                      value={String(preferences.railWidth ?? 6)}
-                      options={[{ v: "4", label: "4px" }, { v: "6", label: "6px" }, { v: "8", label: "8px" }, { v: "10", label: "10px" }]}
-                      onChange={(v) => setPref("railWidth", Number(v) as 4 | 6 | 8 | 10)}
-                    />
-                  </div>
-                  <ToggleRow
-                    label="显示折叠箭头"
-                    desc="在分隔条中央显示一个指向内侧的小箭头"
-                    value={preferences.railChevron ?? true}
-                    onChange={(v) => setPref("railChevron", v)}
-                  />
-                  <button className="btn tiny pref-reset" onClick={() => {
-                    setPref("railTint", DEFAULT_PREFERENCES.railTint);
-                    setPref("railWidth", DEFAULT_PREFERENCES.railWidth);
-                    setPref("railChevron", DEFAULT_PREFERENCES.railChevron);
-                  }}><RotateCcw size={13} /> 恢复默认</button>
                 </section>
 
                 <section className="theme-section">

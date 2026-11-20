@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { Copy, Minus, Settings2, Square, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Panel, PanelGroup } from "react-resizable-panels";
+import { Copy, Minus, PanelRight, PanelRightClose, Settings2, Square, X } from "lucide-react";
 import { useAppStore } from "./store";
 import { loadTheme } from "./theme";
 import { Sidebar } from "./components/Sidebar";
@@ -34,52 +34,6 @@ type DialogState =
   | { kind: "settings" }
   | { kind: "close" };
 
-/**
- * 整条分隔条都是折叠开关：按下后位移不超过 3px 视为点击（折叠/展开），超过则交给拖拽调整宽度。
- * 不用 DOM click —— 分隔条内部会在 pointerup 时 preventDefault，click 事件会被吞掉。
- */
-function useRailToggle(side: "left" | "right", toggle: () => void) {
-  const toggleRef = useRef(toggle);
-  toggleRef.current = toggle;
-
-  useEffect(() => {
-    const el = document.querySelector<HTMLElement>(`.side-rail.${side}`);
-    if (!el) return;
-    let start: { x: number; y: number; moved: boolean } | null = null;
-    const onDown = (e: PointerEvent) => { start = { x: e.clientX, y: e.clientY, moved: false }; };
-    const onMove = (e: PointerEvent) => {
-      if (start && !start.moved && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 3) start.moved = true;
-    };
-    const onUp = () => {
-      const wasClick = start !== null && !start.moved;
-      start = null;
-      if (wasClick) toggleRef.current();
-    };
-    el.addEventListener("pointerdown", onDown);
-    window.addEventListener("pointermove", onMove, true);
-    window.addEventListener("pointerup", onUp, true);
-    window.addEventListener("pointercancel", onUp, true);
-    return () => {
-      el.removeEventListener("pointerdown", onDown);
-      window.removeEventListener("pointermove", onMove, true);
-      window.removeEventListener("pointerup", onUp, true);
-      window.removeEventListener("pointercancel", onUp, true);
-    };
-  }, [side]);
-}
-
-/**
- * 6px 分隔条里的折叠箭头。lucide 的 9~10px 图标塞不进 6px，会两侧溢出盖到终端上，
- * 所以用自绘的 4×8 实心三角（像素对齐，1x 下也不糊），颜色取主题品红。
- */
-function RailChevron({ dir }: { dir: "left" | "right" }) {
-  return (
-    <svg className="rail-chev" width="4" height="8" viewBox="0 0 4 8" aria-hidden="true">
-      <path d={dir === "left" ? "M4 0 0 4 4 8Z" : "M0 0 4 4 0 8Z"} fill="currentColor" />
-    </svg>
-  );
-}
-
 export default function App() {
   const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
   const [themeId, setThemeId] = useState(() => loadTheme().id);
@@ -87,31 +41,20 @@ export default function App() {
   const [maximized, setMaximized] = useState(false);
   const preferences = useAppStore((s) => s.preferences);
   const layout = useAppStore((s) => s.layout);
-  const setLeftCollapsed = useAppStore((s) => s.setLeftCollapsed);
   const setRightCollapsed = useAppStore((s) => s.setRightCollapsed);
-  const toggleLeft = useAppStore((s) => s.toggleLeft);
-  const toggleRight = useAppStore((s) => s.toggleRight);
   const workspaces = useAppStore((s) => s.workspaces);
   const activeId = useAppStore((s) => s.activeId);
   const sessions = useAppStore((s) => s.sessions);
 
-  const leftRef = useRef<import("react-resizable-panels").ImperativePanelHandle>(null);
   const rightRef = useRef<import("react-resizable-panels").ImperativePanelHandle>(null);
 
-  // 折叠只由一个方向驱动：点击 → 面板实例；面板尺寸变化 → 回写 store（见 onResize）
-  const lastSize = useRef({ left: 20, right: 22 });
-  const flipLeft = () => {
-    const p = leftRef.current;
-    if (!p) { toggleLeft(); return; }
-    if (p.isCollapsed()) p.resize(lastSize.current.left); else p.collapse();
-  };
+  // 右侧监控面板由顶栏按钮控制：折叠状态由面板实例驱动，尺寸变化再回写 store（见 onResize）
+  const lastRightSize = useRef(22);
   const flipRight = () => {
     const p = rightRef.current;
-    if (!p) { toggleRight(); return; }
-    if (p.isCollapsed()) p.resize(lastSize.current.right); else p.collapse();
+    if (p?.isCollapsed()) p.resize(lastRightSize.current);
+    else p?.collapse();
   };
-  useRailToggle("left", flipLeft);
-  useRailToggle("right", flipRight);
 
   const closeDialog = () => setDialog({ kind: "none" });
   const activeWs = workspaces.find((w) => w.runtimeId === activeId) ?? null;
@@ -139,12 +82,11 @@ export default function App() {
   };
   const restoreWindow = () => setWindowState("normal");
 
-  // 启动时恢复上次的折叠状态（仅一次；面板实例有时要等一帧才就绪）
+  // 启动时恢复右侧面板状态（面板实例有时要等一帧才就绪）
   useEffect(() => {
     const restore = () => {
-      const l = useAppStore.getState().layout;
-      if (l.leftCollapsed) leftRef.current?.collapse();
-      if (l.rightCollapsed) rightRef.current?.collapse();
+      if (useAppStore.getState().layout.rightCollapsed) rightRef.current?.collapse();
+      else rightRef.current?.resize(lastRightSize.current);
     };
     restore();
     const t = window.setTimeout(restore, 60);
@@ -174,11 +116,6 @@ export default function App() {
       className="app"
       // 全局禁用 webview 原生右键菜单（含"打印 / 检查"等），侧栏自定义菜单照常工作
       onContextMenu={(e) => e.preventDefault()}
-      style={{
-        "--rail-tint": `${Math.max(0, Math.min(100, preferences.railTint ?? 20))}%`,
-        "--rail-tint-hover": `${Math.max(0, Math.min(100, (preferences.railTint ?? 20) + 12))}%`,
-        "--rail-w": `${preferences.railWidth ?? 6}px`,
-      } as CSSProperties}
     >
       <header className="topbar">
         <div className="brand">
@@ -197,6 +134,15 @@ export default function App() {
           )}
         </div>
         <div className="topbar-right">
+          <button
+            className={`icon-btn panel-toggle ${layout.rightCollapsed ? "" : "on"}`}
+            onClick={flipRight}
+            title={layout.rightCollapsed ? "显示监控面板" : "隐藏监控面板"}
+            aria-label={layout.rightCollapsed ? "显示监控面板" : "隐藏监控面板"}
+            aria-pressed={!layout.rightCollapsed}
+          >
+            {layout.rightCollapsed ? <PanelRight size={16} /> : <PanelRightClose size={16} />}
+          </button>
           <button className="icon-btn" onClick={() => setDialog({ kind: "settings" })} title="设置"><Settings2 size={16} /></button>
           <div className="window-controls">
             <button className="win-btn" onClick={doMinimize} title="最小化" aria-label="最小化"><Minus size={15} /></button>
@@ -209,21 +155,9 @@ export default function App() {
       </header>
 
       <div className="app-body">
-        <PanelGroup direction="horizontal" autoSaveId="mssh.layout.v2">
-          <Panel
-            ref={leftRef}
-            order={1}
-            defaultSize={20}
-            minSize={14}
-            maxSize={34}
-            collapsible
-            collapsedSize={0}
-            onResize={(size) => {
-              if (size >= 1) lastSize.current.left = size;
-              setLeftCollapsed(size < 1);
-            }}
-            className="pg-side"
-          >
+        <PanelGroup direction="horizontal" autoSaveId="mssh.layout.v3">
+          {/* 左侧工作区固定展示：不可折叠，也不再有拖拽条 */}
+          <Panel order={1} defaultSize={20} minSize={20} maxSize={20} className="pg-side">
             <Sidebar
               onNew={() => setDialog({ kind: "new" })}
               onFolder={() => setDialog({ kind: "folder" })}
@@ -236,12 +170,8 @@ export default function App() {
               onDeleteFolder={(name) => setDialog({ kind: "deleteFolder", name })}
             />
           </Panel>
-          <PanelResizeHandle className={`resize-handle vertical side-rail left ${layout.leftCollapsed ? "collapsed" : ""}`}>
-            <div className="resize-line" />
-            {preferences.railChevron && <RailChevron dir={layout.leftCollapsed ? "right" : "left"} />}
-          </PanelResizeHandle>
 
-          <Panel order={2} defaultSize={58} minSize={30} className="pg-main">
+          <Panel order={2} defaultSize={80} minSize={30} className="pg-main">
             <main className="main-area">
               {workspaces.length === 0 ? (
                 <EmptyState onNew={() => setDialog({ kind: "new" })} />
@@ -252,20 +182,17 @@ export default function App() {
             <GlobalCommandBar />
           </Panel>
 
-          <PanelResizeHandle className={`resize-handle vertical side-rail right ${layout.rightCollapsed ? "collapsed" : ""}`}>
-            <div className="resize-line" />
-            {preferences.railChevron && <RailChevron dir={layout.rightCollapsed ? "left" : "right"} />}
-          </PanelResizeHandle>
+          {/* 右侧监控面板默认收起，只由顶栏按钮控制，没有可拖拽的收缩条 */}
           <Panel
             ref={rightRef}
             order={3}
-            defaultSize={22}
+            defaultSize={layout.rightCollapsed ? 0 : lastRightSize.current}
             minSize={16}
             maxSize={34}
             collapsible
             collapsedSize={0}
             onResize={(size) => {
-              if (size >= 1) lastSize.current.right = size;
+              if (size >= 1) lastRightSize.current = size;
               setRightCollapsed(size < 1);
             }}
             className="pg-monitor"

@@ -109,6 +109,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .icon-btn.tiny { width: 24px; height: 24px; }
 .icon-btn.danger:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .icon-btn.flip { transform: rotate(180deg); }
+/* 顶栏右侧监控面板开关：激活时高亮，让「面板当前是否显示」一眼可见 */
+.icon-btn.panel-toggle.on { background: var(--accent-soft); color: var(--accent); }
+.icon-btn.panel-toggle.on:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 
 kbd {
   font-family: var(--font-mono); font-size: var(--text-xs);
@@ -163,39 +166,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .resize-handle.horizontal { height: 4px; cursor: row-resize; }
 .resize-handle:hover, .resize-handle[data-resize-handle-active] { background: var(--accent); }
 .resize-line { position: absolute; inset: 0; }
-/* 隐藏式边缘把手：融入分隔条的主题色细条，不再外溢 */
-.side-rail { overflow: visible; }
-/* 展开/收起统一一条常驻细条：左右两侧**同一个**颜色，它既不等于侧栏、也不等于面板，
-   所以两边都看得见。浓度（--rail-tint）、宽度（--rail-w）由设置面板控制 */
-.resize-handle.vertical.side-rail,
-.resize-handle.vertical.side-rail.collapsed {
-  width: var(--rail-w, 6px); margin: 0; z-index: 5;
-  background: #f3d0de;                                   /* 不支持 color-mix 时的兜底 */
-  background: color-mix(in srgb, var(--accent) var(--rail-tint, 20%), var(--panel));
-  box-shadow: inset -1px 0 0 var(--line);
-}
-.resize-handle.vertical.side-rail.right,
-.resize-handle.vertical.side-rail.right.collapsed { box-shadow: inset 1px 0 0 var(--line); }
-.resize-handle.vertical.side-rail:hover,
-.resize-handle.vertical.side-rail[data-resize-handle-active],
-.resize-handle.vertical.side-rail.collapsed:hover,
-.resize-handle.vertical.side-rail.collapsed[data-resize-handle-active] {
-  background: #ebb5ca;                                   /* 兜底 */
-  background: color-mix(in srgb, var(--accent) var(--rail-tint-hover, 32%), var(--panel));
-}
-.resize-handle.vertical.side-rail .resize-line { display: none; }
-/* 折叠箭头：6px 装不下 lucide 图标（会溢出到终端上），改用 5×9 的自绘 chevron，
-   正好嵌在细条里；常显品红，hover 时更深一档 */
-.rail-chev {
-  position: absolute; inset: 0 auto; top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  color: var(--accent); pointer-events: none;
-  opacity: .95; transition: opacity .14s ease, color .14s ease;
-}
-.side-rail:hover .rail-chev,
-.side-rail[data-resize-handle-active] .rail-chev {
-  opacity: 1; color: color-mix(in srgb, var(--accent) 78%, #000);
-}
+/* 左右两条侧栏收缩条已移除：左侧固定展示，右侧由顶栏按钮控制 */
 /* 不设 flex-grow 过渡：面板在动画中途读取尺寸会把“恢复宽度”算成最小值 */
 .pg-side, .pg-main, .pg-monitor { display: flex; min-width: 0; min-height: 0; }
 .pg-main { flex-direction: column; }
