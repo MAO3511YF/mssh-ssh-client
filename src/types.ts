@@ -312,4 +312,12 @@ export interface Driver {
 
   // ===== 资源监控 =====
   collectMonitor(sessionId: string): Promise<MonitorSnapshot>;
+
+  // ===== 凭据（密码不落 localStorage）=====
+  /** 把密码交给系统加密存储（Windows DPAPI），只在当前用户下可解密 */
+  secretSet(id: string, password: string): Promise<void>;
+  /** 取回已保存的密码；没有则返回 null */
+  secretGet(id: string): Promise<string | null>;
+  /** 删除该连接保存的密码 */
+  secretRemove(id: string): Promise<void>;
 }

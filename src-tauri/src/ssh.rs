@@ -13,13 +13,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use russh::client::{self, Config, Handler, Msg, Session as ClientSession};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::agent::AgentIdentity;
-use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
+use russh::keys::known_hosts::{check_known_hosts, learn_known_hosts};
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
 use russh::{Channel, ChannelId, Disconnect};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -34,6 +36,10 @@ pub trait EventSink: Send + Sync {
 
 type Sink = Arc<dyn EventSink>;
 pub type SessionHandle = client::Handle<ClientHandler>;
+
+/// SSH 握手（含密钥交换与认证前的协议协商）最长等待时间。
+/// 没有这个上限时，对端接受 TCP 却不响应 SSH 协议会让连永远挂着。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 通道路由：只有一个 shell 通道的数据该推给终端；SFTP/exec 子通道的数据
 /// 由各自的读取方消费。russh 会把数据同时投递到通道内部 receiver 和 Handler
@@ -108,6 +114,8 @@ fn mark_closed(sink: &Sink, session_id: &str, closed: &AtomicBool) {
     if let Ok(mut sessions) = SESSIONS.lock() {
         sessions.remove(session_id);
     }
+    // 会话结束就丢掉它的监控历史，否则每次重连都会留一条永不释放的记录
+    crate::monitor::forget(session_id);
     sink.closed(session_id);
     sink.status(session_id, "closed", None);
 }
@@ -119,6 +127,11 @@ pub struct ClientHandler {
     session_id: String,
     closed: Arc<AtomicBool>,
     routing: RoutingState,
+    /// 校验 known_hosts 需要知道连的是哪台机器
+    host: String,
+    port: u16,
+    /// 主机密钥校验不通过时的具体原因，connect() 失败后取出来给用户看
+    reject: Arc<Mutex<Option<String>>>,
 }
 
 impl ClientHandler {
@@ -132,13 +145,57 @@ impl ClientHandler {
 impl Handler for ClientHandler {
     type Error = russh::Error;
 
-    /// 前端没有主机密钥确认 UI，这里接受服务端密钥（与浏览器 mock 行为一致）。
-    /// 若后续要接 known_hosts，可在这里校验并返回 false。
+    /// 主机密钥校验（TOFU：首次连接记录指纹并放行，之后指纹必须完全一致）。
+    ///
+    /// 之前这里无条件 `Ok(true)`，等于完全不校验 host key，任何中间人都能
+    /// 劫持会话、读取密码、篡改下发命令。现在改为：
+    /// - 未知主机 → 记入 ~/.ssh/known_hosts（与系统 ssh 共用同一份文件）并提示指纹
+    /// - 已知主机且一致 → 放行
+    /// - 已知主机但变了 → 拒绝握手，把新旧差异信息交给 connect() 报给用户
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKeyOrCertificate,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> std::result::Result<bool, Self::Error> {
-        Ok(true)
+        let pk = server_public_key.public_key();
+        let fingerprint = pk.fingerprint(HashAlg::Sha256).to_string();
+        let target = format!("{}:{}", self.host, self.port);
+
+        match check_known_hosts(&self.host, self.port, &pk) {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                // 首次连接：记录指纹后放行（TOFU），同时把指纹显示给用户核对
+                match learn_known_hosts(&self.host, self.port, &pk) {
+                    Ok(()) => self.sink.status(
+                        &self.session_id,
+                        "connecting",
+                        Some(format!("首次连接 {target}，已记录主机指纹 {fingerprint}")),
+                    ),
+                    Err(err) => self.sink.status(
+                        &self.session_id,
+                        "connecting",
+                        Some(format!(
+                            "首次连接 {target}，主机指纹 {fingerprint}（写入 known_hosts 失败: {err}）"
+                        )),
+                    ),
+                }
+                Ok(true)
+            }
+            Err(err) => {
+                let message = match &err {
+                    russh::keys::Error::KeyChanged { line } => format!(
+                        "主机密钥校验失败：{target} 的密钥与 known_hosts 第 {line} 行记录不一致。\n\
+                         这可能是中间人攻击，也可能是服务器重装过系统。\n\
+                         当前收到的指纹：{fingerprint}\n\
+                         确认无误后，删除 ~/.ssh/known_hosts 中对应行再重连。"
+                    ),
+                    other => format!("主机密钥校验失败：{target} — {other}"),
+                };
+                if let Ok(mut slot) = self.reject.lock() {
+                    *slot = Some(message);
+                }
+                Ok(false)
+            }
+        }
     }
 
     async fn data(
@@ -219,7 +276,12 @@ async fn authenticate(handle: &mut SessionHandle, config: &SessionConfig) -> Res
     let user = config.username.clone();
     let success = match config.auth_method.as_str() {
         "password" => {
+            // 密码只存在于内存：前端保存连接时把密码交给 secrets 模块加密，
+            // 连接前再取回并随 config 传进来，因此这里拿不到就是真的没有
             let password = config.password.clone().unwrap_or_default();
+            if password.is_empty() {
+                bail!("该连接没有可用密码：请编辑这个连接重新输入密码");
+            }
             handle.authenticate_password(&user, password).await?
         }
         "privateKey" => {
@@ -287,25 +349,44 @@ pub async fn connect(sink: Sink, config: SessionConfig) -> Result<()> {
 
     let closed = Arc::new(AtomicBool::new(false));
     let routing = RoutingState::default();
+    let reject: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let handler = ClientHandler {
         sink: sink.clone(),
         session_id: session_id.clone(),
         closed: closed.clone(),
         routing: routing.clone(),
+        host: config.host.clone(),
+        port: config.port,
+        reject: reject.clone(),
     };
     let mut client_config = Config::default();
-    // 终端是长连接， inactivity_timeout 会让长时间挂机的会话被断开
+    // 终端是长连接，inactivity_timeout 会让长时间挂机的会话被断开。
+    // 但完全没有超时又会让半开连接（NAT 静默丢包、对端宕机）永远挂着：
+    // 界面一直显示"已连接"、输入无反应、也没有任何报错。
+    // 改用 keepalive：每 30 秒发心跳，连续 3 次无响应判定链路已断。
     client_config.inactivity_timeout = None;
+    client_config.keepalive_interval = Some(Duration::from_secs(30));
+    client_config.keepalive_max = 3;
     client_config.nodelay = true;
 
     let result = async {
-        let mut handle = client::connect(
+        // TCP 能连上但 SSH 握手卡死时（对端不响应、防火墙半开）不能无限等待
+        let connect_fut = client::connect(
             Arc::new(client_config),
             (config.host.as_str(), config.port),
             handler,
-        )
-        .await
-        .with_context(|| format!("无法连接 {}:{}", config.host, config.port))?;
+        );
+        let mut handle = tokio::time::timeout(CONNECT_TIMEOUT, connect_fut)
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "连接 {}:{} 超时（{} 秒内未完成 SSH 握手）",
+                    config.host,
+                    config.port,
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })?
+            .with_context(|| format!("无法连接 {}:{}", config.host, config.port))?;
 
         authenticate(&mut handle, &config).await?;
 
@@ -340,7 +421,14 @@ pub async fn connect(sink: Sink, config: SessionConfig) -> Result<()> {
     .await;
 
     if let Err(err) = result {
-        sink.status(&session_id, "error", Some(format!("{err:#}")));
+        // 主机密钥校验失败时，russh 只会给一句笼统的错误，
+        // 真正的差异说明放在 reject 里，优先用它
+        let message = reject
+            .lock()
+            .ok()
+            .and_then(|m| m.clone())
+            .unwrap_or_else(|| format!("{err:#}"));
+        sink.status(&session_id, "error", Some(message));
         closed.store(true, Ordering::SeqCst);
     } else {
         sink.status(&session_id, "connected", None);

@@ -1,6 +1,6 @@
 [package]
 name = "mssh"
-version = "1.0.1"
+version = "1.0.2"
 description = "MSSH - 现代化 SSH 客户端"
 authors = ["MSSH"]
 license = "MIT"
@@ -37,6 +37,10 @@ dirs = "6"
 anyhow = "1"
 # 时间格式化（监控快照的文件修改时间）
 chrono = "0.4"
+
+# Windows DPAPI：连接密码加密存储（CryptProtectData / CryptUnprotectData）
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [dev-dependencies]
 # 集成测试里生成临时 SSH 服务端主机密钥

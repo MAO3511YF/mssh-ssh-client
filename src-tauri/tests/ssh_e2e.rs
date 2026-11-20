@@ -134,9 +134,9 @@ impl server::Handler for EchoServer {
     }
 }
 
-fn config(host: &str, port: u16) -> SessionConfig {
+fn config(id: &str, host: &str, port: u16) -> SessionConfig {
     SessionConfig {
-        id: "e2e-session".into(),
+        id: id.into(),
         kind: "ssh".into(),
         name: "e2e".into(),
         host: host.into(),
@@ -152,6 +152,16 @@ fn config(host: &str, port: u16) -> SessionConfig {
         color: None,
         created_at: 0,
     }
+}
+
+/// 与 russh 内部一致的主目录解析（它用的是 std::env::home_dir）。
+/// 注意不能用 dirs::home_dir()：Windows 上那是 SHGetKnownFolderPath，
+/// 与 USERPROFILE 环境变量可能指向不同目录，测试会把伪造记录写到别处。
+fn test_home() -> std::path::PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .expect("测试环境既没有 USERPROFILE 也没有 HOME")
 }
 
 #[tokio::test]
@@ -173,20 +183,21 @@ async fn ssh_round_trip() {
     tokio::spawn(server);
 
     let sink = Arc::new(Recorder::default());
-    ssh::connect(sink.clone(), config(&addr.ip().to_string(), addr.port()))
+    let id = "e2e-roundtrip";
+    ssh::connect(sink.clone(), config(id, &addr.ip().to_string(), addr.port()))
         .await
         .unwrap();
 
     wait_until(&sink, "status", "connected").await;
-    ssh::write("e2e-session", "hello-from-mssh".into()).await.unwrap();
+    ssh::write(id, "hello-from-mssh".into()).await.unwrap();
     wait_until(&sink, "data", "ECHO:hello-from-mssh").await;
-    ssh::resize("e2e-session", 120, 40).await.unwrap();
+    ssh::resize(id, 120, 40).await.unwrap();
 
     let dyn_sink: Arc<dyn EventSink> = sink.clone();
-    ssh::disconnect(&dyn_sink, "e2e-session").await.unwrap();
-    wait_until(&sink, "closed", "e2e-session").await;
+    ssh::disconnect(&dyn_sink, id).await.unwrap();
+    wait_until(&sink, "closed", id).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(sink.count("closed", "e2e-session"), 1, "closed 事件不应重复：{}", sink.dump());
+    assert_eq!(sink.count("closed", id), 1, "closed 事件不应重复：{}", sink.dump());
     shutdown.shutdown("test done".into());
 }
 
@@ -209,7 +220,7 @@ async fn ssh_auth_failure_reports_error_status() {
     tokio::spawn(server);
 
     let sink = Arc::new(Recorder::default());
-    ssh::connect(sink.clone(), config(&addr.ip().to_string(), addr.port()))
+    ssh::connect(sink.clone(), config("e2e-authfail", &addr.ip().to_string(), addr.port()))
         .await
         .unwrap();
     wait_until(&sink, "status", "error").await;
@@ -229,4 +240,66 @@ impl server::Server for RejectServer {
 
 impl server::Handler for RejectServer {
     type Error = russh::Error;
+}
+
+/// 主机密钥校验：先在 known_hosts 里伪造一条同 host:port 但不同公钥的记录，
+/// 连接必须被拒绝（这正是防中间人的核心行为）。
+#[tokio::test]
+async fn host_key_mismatch_is_rejected() {
+    let server_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let server_config = Arc::new(russh::server::Config {
+        inactivity_timeout: None,
+        auth_rejection_time: Duration::from_millis(10),
+        auth_rejection_time_initial: Some(Duration::from_millis(10)),
+        keys: vec![server_key],
+        ..Default::default()
+    });
+
+    let listener = Box::leak(Box::new(TcpListener::bind("127.0.0.1:0").await.unwrap()));
+    let addr = listener.local_addr().unwrap();
+    let server_impl: &'static mut EchoServer = Box::leak(Box::new(EchoServer));
+    let server = server_impl.run_on_socket(server_config, listener);
+    let shutdown = server.handle();
+    tokio::spawn(server);
+
+    // 伪造一条记录：同一个 host:port，但换成另一把完全不相关的公钥
+    let fake_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let path = test_home().join(".ssh").join("known_hosts");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let before = std::fs::read_to_string(&path).unwrap_or_default();
+    let bogus = format!(
+        "[{}]:{} {}\n",
+        addr.ip(),
+        addr.port(),
+        fake_key.public_key().to_openssh().unwrap()
+    );
+    std::fs::write(&path, format!("{before}{bogus}")).unwrap();
+
+    let sink = Arc::new(Recorder::default());
+    ssh::connect(sink.clone(), config("e2e-hostkey", &addr.ip().to_string(), addr.port()))
+        .await
+        .unwrap();
+
+    let mut rejected = false;
+    for _ in 0..120 {
+        if sink.has("status", "主机密钥校验失败") {
+            rejected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // 无论结果如何先还原 known_hosts，避免污染开发机
+    std::fs::write(&path, before).unwrap();
+
+    assert!(
+        rejected,
+        "指纹不一致时必须拒绝连接，实际事件：{}",
+        sink.dump()
+    );
+    // 被拒绝时不应该出现 connected
+    assert!(!sink.has("status", "connected"), "不应建立连接：{}", sink.dump());
+    shutdown.shutdown("test done".into());
 }

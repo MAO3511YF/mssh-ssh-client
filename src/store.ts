@@ -42,6 +42,37 @@ function save(key: string, value: unknown) {
   }
 }
 
+/**
+ * 保存连接列表。
+ *
+ * 密码绝不写进 localStorage（那会以明文落在 WebView2 的 leveldb 里）：
+ * 带密码的条目先交给系统加密存储（Windows DPAPI），再从落盘副本里剥掉。
+ * 连接时由 withStoredPassword 取回。
+ */
+function persistSessions(sessions: SessionConfig[]) {
+  const stripped = sessions.map((s) => {
+    if (s.password) {
+      void driver.secretSet(s.id, s.password).catch(() => {
+        /* 加密失败时仅丢失"记住密码"，不影响本次连接 */
+      });
+    }
+    const { password: _plaintext, ...rest } = s;
+    return rest;
+  });
+  save(SESSIONS_KEY, stripped);
+}
+
+/** 连接前取回密码：从存储里加载出来的连接不再带 password 字段 */
+async function withStoredPassword(config: SessionConfig): Promise<SessionConfig> {
+  if (config.authMethod !== "password" || config.password) return config;
+  try {
+    const saved = await driver.secretGet(config.id);
+    return saved ? { ...config, password: saved } : config;
+  } catch {
+    return config;
+  }
+}
+
 interface AppState {
   sessions: SessionConfig[];
   workspaces: Workspace[];
@@ -126,7 +157,9 @@ function initialSessions(): SessionConfig[] {
   const sessions = load<SessionConfig[]>(SESSIONS_KEY, []);
   // 清理旧版本自动注入的演示连接；真实后端已就绪，不再预置示例数据
   const kept = sessions.filter((s) => !s.id.startsWith("demo-"));
-  if (kept.length !== sessions.length) save(SESSIONS_KEY, kept);
+  // 老版本把密码明文写在 localStorage 里：迁移到加密存储并重写落盘副本
+  const hasPlaintextPassword = kept.some((s) => s.password);
+  if (kept.length !== sessions.length || hasPlaintextPassword) persistSessions(kept);
   return kept;
 }
 
@@ -154,11 +187,17 @@ function startSession(
       }
       setTimeout(() => {
         if (!get().workspaces.some((w) => w.runtimeId === runtimeId)) return;
-        void driver.connect({ ...config, id: runtimeId }, handlers);
+        void (async () => {
+          const resolved = await withStoredPassword(config);
+          await driver.connect({ ...resolved, id: runtimeId }, handlers);
+        })();
       }, 900);
     },
   };
-  void driver.connect({ ...config, id: runtimeId }, handlers);
+  void (async () => {
+    const resolved = await withStoredPassword(config);
+    await driver.connect({ ...resolved, id: runtimeId }, handlers);
+  })();
   monitorRegistry.set(runtimeId, new Monitor(runtimeId));
 }
 
@@ -192,15 +231,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => {
       const idx = state.sessions.findIndex((s) => s.id === config.id);
       const sessions = idx >= 0 ? state.sessions.map((s) => (s.id === config.id ? config : s)) : [...state.sessions, config];
-      save(SESSIONS_KEY, sessions);
+      persistSessions(sessions);
       return { sessions };
     });
   },
 
   deleteSession: (id) => {
+    // 连接删除时一并清掉它的加密密码，别在凭据库里留孤儿条目
+    void driver.secretRemove(id).catch(() => {});
     set((state) => {
       const sessions = state.sessions.filter((s) => s.id !== id);
-      save(SESSIONS_KEY, sessions);
+      persistSessions(sessions);
       return { sessions };
     });
   },
@@ -214,7 +255,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const workspaces = state.workspaces.map((w) =>
         w.session.id === id ? { ...w, session: { ...w.session, name: v } } : w,
       );
-      save(SESSIONS_KEY, sessions);
+      persistSessions(sessions);
       return { sessions, workspaces };
     });
   },
@@ -456,7 +497,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           : w,
       );
       save(FOLDERS_KEY, folders);
-      save(SESSIONS_KEY, sessions);
+      persistSessions(sessions);
       return { folders, sessions, workspaces };
     });
   },
@@ -476,7 +517,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           : w,
       );
       save(FOLDERS_KEY, folders);
-      save(SESSIONS_KEY, sessions);
+      persistSessions(sessions);
       return { folders, sessions, workspaces };
     });
   },

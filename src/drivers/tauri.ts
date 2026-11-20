@@ -94,4 +94,15 @@ export class TauriDriver implements Driver {
   collectMonitor(sessionId: string) {
     return invoke<MonitorSnapshot>("monitor_collect", { sessionId });
   }
+
+  // ===== 凭据：密码交给后端 DPAPI 加密，不再写进 localStorage =====
+  secretSet(id: string, password: string) {
+    return invoke<void>("secret_set", { id, password });
+  }
+  secretGet(id: string) {
+    return invoke<string | null>("secret_get", { id });
+  }
+  secretRemove(id: string) {
+    return invoke<void>("secret_remove", { id });
+  }
 }

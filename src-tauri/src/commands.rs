@@ -162,3 +162,26 @@ pub fn fs_remove(path: String, is_dir: bool) -> Result<(), String> {
 pub fn fs_create(path: String, is_dir: bool) -> Result<(), String> {
     fs_local::create(&path, is_dir).map_err(|e| format!("{e:#}"))
 }
+
+// ===== 凭据（密码加密存储）=====
+// 密码不再进入 localStorage，改由这里用 DPAPI 加密后单独落盘
+
+#[tauri::command]
+pub fn secret_set(id: String, password: String) -> Result<(), String> {
+    crate::secrets::set(&id, &password).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn secret_get(id: String) -> Result<Option<String>, String> {
+    crate::secrets::get(&id).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn secret_remove(id: String) -> Result<(), String> {
+    crate::secrets::remove(&id).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn secret_has(id: String) -> bool {
+    crate::secrets::has(&id)
+}

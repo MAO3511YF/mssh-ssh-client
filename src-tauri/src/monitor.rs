@@ -24,7 +24,10 @@ static HISTORY: LazyLock<Mutex<HashMap<String, History>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn push_history(id: &str, cpu: f64, net: f64) -> (Vec<f64>, Vec<f64>) {
-    let mut map = HISTORY.lock().unwrap();
+    // 锁中毒（此前某次采集 panic）时不能让整个采集跟着崩，退化为空历史
+    let Ok(mut map) = HISTORY.lock() else {
+        return (Vec::new(), Vec::new());
+    };
     let h = map.entry(id.to_string()).or_insert_with(|| History {
         cpu: vec![0.0; HISTORY_LEN],
         net: vec![0.0; HISTORY_LEN],
@@ -36,6 +39,15 @@ fn push_history(id: &str, cpu: f64, net: f64) -> (Vec<f64>, Vec<f64>) {
     h.cpu.push(cpu);
     h.net.push(net);
     (h.cpu.clone(), h.net.clone())
+}
+
+/// 会话结束时清掉它的历史曲线。
+/// sessionId 形如 `${config.id}-${Date.now()}`，每次重连都是新键，
+/// 不主动清理的话这个 Map 会随使用时长无限增长。
+pub fn forget(id: &str) {
+    if let Ok(mut map) = HISTORY.lock() {
+        map.remove(id);
+    }
 }
 
 /// CPU 采样：(user, nice, system, idle, iowait, irq, softirq, steal, guest...)
@@ -273,7 +285,9 @@ pub async fn collect(session_id: &str) -> Result<MonitorSnapshot> {
     let mut connections = Vec::new();
     for line in sections.get("NETSTAT").unwrap_or(&String::new()).lines().skip(2) {
         let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() < 4 {
+        // 后面要取 f[3]/f[4]/f[5]，少于 6 个字段的行直接跳过，
+        // 否则一行残缺输出就会 panic
+        if f.len() < 6 {
             continue;
         }
         if !f[0].starts_with("tcp") {
@@ -329,7 +343,8 @@ fn parse_diskstats(s: &str) -> (f64, f64) {
     let mut write_kb = 0u64;
     for line in s.lines() {
         let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() < 8 {
+        // 用到 f[5] 与 f[9]，至少需要 10 个字段（标准 /proc/diskstats 是 14 个）
+        if f.len() < 10 {
             continue;
         }
         let name = f[2];

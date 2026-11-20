@@ -2,6 +2,7 @@ pub mod commands;
 pub mod fs_local;
 pub mod model;
 pub mod monitor;
+pub mod secrets;
 pub mod sftp;
 pub mod ssh;
 
@@ -77,6 +78,10 @@ pub fn run() {
             commands::fs_rename,
             commands::fs_remove,
             commands::fs_create,
+            commands::secret_set,
+            commands::secret_get,
+            commands::secret_remove,
+            commands::secret_has,
         ])
         .setup(|app| {
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))

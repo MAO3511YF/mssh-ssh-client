@@ -68,18 +68,24 @@ where
     let channel = ssh::open_subchannel(&handle, &routing).await?;
     let id = channel.id();
 
-    // 必须显式请求 sftp 子系统，否则服务端不会启动 SFTP 协议处理
-    channel.request_subsystem(true, "sftp").await?;
+    // 建连与操作全部放进内部 async 块，保证任何一步失败都还能走到下面的
+    // release_subchannel——否则失败的子通道 id 会永久留在路由表里（内存泄漏）
+    let result = async {
+        // 必须显式请求 sftp 子系统，否则服务端不会启动 SFTP 协议处理
+        channel.request_subsystem(true, "sftp").await?;
 
-    // SftpSession::new 需要拥有 stream；从此处开始持有它
-    let stream = channel.into_stream();
-    let sftp = SftpSession::new(stream)
-        .await
-        .with_context(|| "启动 SFTP 子系统失败（服务端可能未启用 sftp）")?;
-    sftp.set_timeout(20);
+        // SftpSession::new 需要拥有 stream；从此处开始持有它
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .with_context(|| "启动 SFTP 子系统失败（服务端可能未启用 sftp）")?;
+        sftp.set_timeout(20);
 
-    let result = op(&sftp).await;
-    let _ = sftp.close().await;
+        let out = op(&sftp).await;
+        let _ = sftp.close().await;
+        out
+    }
+    .await;
+
     ssh::release_subchannel(&routing, id);
     result
 }

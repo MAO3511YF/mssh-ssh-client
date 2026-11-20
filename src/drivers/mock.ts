@@ -170,4 +170,16 @@ export class MockDriver implements Driver {
     const { mockSnapshot } = await import("../monitor");
     return mockSnapshot(sessionId);
   }
+
+  // ===== 凭据：浏览器演示环境只放内存，不落盘 =====
+  private mockSecrets = new Map<string, string>();
+  async secretSet(id: string, password: string): Promise<void> {
+    this.mockSecrets.set(id, password);
+  }
+  async secretGet(id: string): Promise<string | null> {
+    return this.mockSecrets.get(id) ?? null;
+  }
+  async secretRemove(id: string): Promise<void> {
+    this.mockSecrets.delete(id);
+  }
 }
