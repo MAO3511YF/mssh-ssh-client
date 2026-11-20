@@ -169,7 +169,7 @@ export function Sidebar({
         </div>
         <div className="side-tree-body">
           {groups.length === 0 ? (
-            <div className="empty-list">暂无连接</div>
+            <div className="empty-list">还没有工作区，点右上角图标新建</div>
           ) : groups.map((g) => (
             <div className="dir-group" key={g.name}>
               <div className="dir-row">

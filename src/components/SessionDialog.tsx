@@ -28,12 +28,13 @@ export function SessionDialog({ editing, onClose }: Props) {
     folders.forEach(push);
     sessions.forEach((s) => push(s.directory));
     push(editing?.directory);
-    if (names.length === 0) names.push("常用");
     return names;
   }, [folders, sessions, editing]);
 
+  const hasWorkspace = workspaceNames.length > 0;
+
   const [name, setName] = useState(editing?.name ?? "");
-  const [directory, setDirectory] = useState(editing?.directory ?? workspaceNames[0]);
+  const [directory, setDirectory] = useState(editing?.directory ?? workspaceNames[0] ?? "");
   const [host, setHost] = useState(editing?.host ?? "");
   const [port, setPort] = useState(String(editing?.port ?? 22));
   const [username, setUsername] = useState(editing?.username ?? "root");
@@ -49,7 +50,7 @@ export function SessionDialog({ editing, onClose }: Props) {
   const validate = () => {
     const e: Record<string, string> = {};
     if (!name.trim()) e.name = "请输入名称";
-    if (!directory.trim()) e.directory = "请选择工作区";
+    if (!directory.trim()) e.directory = "请先新建并选择一个工作区";
     if (!host.trim()) e.host = "请输入主机地址";
     if (!/^\d+$/.test(port) || +port < 1 || +port > 65535) e.port = "端口无效";
     setErrors(e);
@@ -106,9 +107,11 @@ export function SessionDialog({ editing, onClose }: Props) {
 
             <label className="field">
               <span>工作区 <b>*</b></span>
-              <select value={directory} onChange={(e) => { setDirectory(e.target.value); setErrors((x) => ({ ...x, directory: "" })); }}>
+              <select value={directory} onChange={(e) => { setDirectory(e.target.value); setErrors((x) => ({ ...x, directory: "" })); }} disabled={!hasWorkspace}>
+                {!hasWorkspace && <option value="">尚无工作区，请先新建</option>}
                 {workspaceNames.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
+              {!hasWorkspace && <small className="err hint">请先在左侧点右上角图标新建一个工作区</small>}
               {errors.directory && <small className="err">{errors.directory}</small>}
             </label>
 

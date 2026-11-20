@@ -638,6 +638,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .field input, .field select, .field textarea { width: 100%; }
 .field textarea { resize: vertical; font-family: inherit; }
 .err { color: var(--danger); font-size: var(--text-xs); }
+/* 中性提示：用于「还没有工作区」这类引导文案，与红色错误区分开 */
+.field .hint { color: var(--muted); font-size: var(--text-xs); }
 .input-with-action { display: flex; gap: 6px; }
 .input-with-action input { flex: 1; }
 .seg-group { display: flex; gap: 4px; flex-wrap: wrap; }

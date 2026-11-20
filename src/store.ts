@@ -163,6 +163,28 @@ function initialSessions(): SessionConfig[] {
   return kept;
 }
 
+/** 1.0.2 及更早版本首次运行会自动写入这六个示例工作区 */
+const LEGACY_DEFAULT_FOLDERS = ["常用", "生产环境", "预发布", "开发环境", "测试环境", "监控运维"];
+
+/**
+ * 工作区列表：新装用户从零开始，由用户自己新建。
+ *
+ * 老版本会自动塞入六个示例工作区。若存下来的内容与默认值完全一致（顺序也一致），
+ * 说明用户从未增删改过，那只是默认值而非用户自建，这里清掉；
+ * 只要用户动过任意一项（改名、新增、删除），就原样保留，不会误删真实数据。
+ */
+function initialFolders(): string[] {
+  const stored = load<string[]>(FOLDERS_KEY, []);
+  const untouchedLegacy =
+    stored.length === LEGACY_DEFAULT_FOLDERS.length &&
+    stored.every((v, i) => v === LEGACY_DEFAULT_FOLDERS[i]);
+  if (untouchedLegacy) {
+    save(FOLDERS_KEY, []);
+    return [];
+  }
+  return stored.filter((v) => typeof v === "string" && v.trim());
+}
+
 /** 供标签/分屏操作复用的不可变空值，避免 zustand selector 死循环 */
 const EMPTY_PANES: TabPane[] = [{ tabs: [], activeTab: null }];
 const newPane = (): TabPane => ({ tabs: [], activeTab: null });
@@ -218,7 +240,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { preferences };
     });
   },
-  folders: load(FOLDERS_KEY, ["常用", "生产环境", "预发布", "开发环境", "测试环境", "监控运维"]),
+  folders: initialFolders(),
   commands: load(COMMANDS_KEY, DEFAULT_COMMANDS),
   editorFiles: load(FILES_KEY, []),
   remoteFiles: load(REMOTE_KEY, {}),
