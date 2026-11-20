@@ -14,6 +14,7 @@ use russh::server::{Auth, ChannelOpenHandle, Msg as ServerMsg, Server as _, Sess
 use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{File, FileAttributes, Handle, Name, Status, StatusCode, Version};
 use tokio::net::TcpListener;
+use zeroize::Zeroizing;
 
 #[derive(Clone, Default)]
 struct NoopSink;
@@ -164,7 +165,8 @@ fn config(host: &str, port: u16) -> SessionConfig {
         username: "tester".into(),
         directory: "测试".into(),
         auth_method: "password".into(),
-        password: Some("secret".into()),
+        password: Some(Zeroizing::new("secret".into())),
+        secret_id: None,
         private_key_path: None,
         protocol: Some("sftp".into()),
         env: None,

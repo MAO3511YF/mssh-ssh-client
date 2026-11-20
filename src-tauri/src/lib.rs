@@ -79,7 +79,6 @@ pub fn run() {
             commands::fs_remove,
             commands::fs_create,
             commands::secret_set,
-            commands::secret_get,
             commands::secret_remove,
             commands::secret_has,
         ])

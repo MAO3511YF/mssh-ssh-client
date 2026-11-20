@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Eye, EyeOff, Save, PlugZap, X } from "lucide-react";
 import { useAppStore } from "../store";
+import { driver } from "../drivers";
 import { AUTH_METHODS, COLOR_LABELS, ENV_OPTIONS } from "../constants";
 import type { AuthType, SessionConfig } from "../types";
 import { useModal } from "../useModal";
@@ -45,7 +46,21 @@ export function SessionDialog({ editing, onClose }: Props) {
   const [env, setEnv] = useState(editing?.env?.stage ?? "开发环境");
   const [note, setNote] = useState(editing?.note ?? "");
   const [showPwd, setShowPwd] = useState(false);
+  const [hasSavedPassword, setHasSavedPassword] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // 只问后端"有没有存过密码"，不把明文取回前端
+  useEffect(() => {
+    let alive = true;
+    if (editing?.id && auth === "password") {
+      void driver.secretHas(editing.id)
+        .then((v) => { if (alive) setHasSavedPassword(v); })
+        .catch(() => { if (alive) setHasSavedPassword(false); });
+    } else {
+      setHasSavedPassword(false);
+    }
+    return () => { alive = false; };
+  }, [editing?.id, auth]);
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -85,6 +100,14 @@ export function SessionDialog({ editing, onClose }: Props) {
   const test = () => {
     if (!host.trim()) { showToast("请先填写主机地址", "error"); return; }
     showToast("测试连接成功（演示）", "success");
+  };
+
+  const clearSavedPassword = () => {
+    if (!editing) return;
+    void driver.secretRemove(editing.id).then(() => {
+      setHasSavedPassword(false);
+      showToast("已清除该连接保存的密码", "success");
+    }).catch((e) => showToast(`清除失败: ${String(e)}`, "error"));
   };
 
   return (
@@ -145,11 +168,22 @@ export function SessionDialog({ editing, onClose }: Props) {
               <label className="field wide">
                 <span>密码</span>
                 <div className="input-with-action">
-                  <input type={showPwd ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+                  <input
+                    type={showPwd ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={hasSavedPassword ? "留空则继续使用已保存密码" : "••••••••"}
+                  />
                   <button className="icon-btn" title={showPwd ? "隐藏" : "显示"} onClick={() => setShowPwd((v) => !v)}>
                     {showPwd ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
                 </div>
+                {hasSavedPassword && (
+                  <small className="hint">
+                    密码已由系统加密保存，留空即沿用；
+                    <button type="button" className="link-btn" onClick={clearSavedPassword}>清除已保存密码</button>
+                  </small>
+                )}
               </label>
             )}
 

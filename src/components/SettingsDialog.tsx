@@ -94,6 +94,9 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
   const [themeName, setThemeName] = useState("");
   const preferences = useAppStore((s) => s.preferences);
   const setPreference = useAppStore((s) => s.setPreference);
+  const clearHistory = useAppStore((s) => s.clearHistory);
+  const clearEditorCache = useAppStore((s) => s.clearEditorCache);
+  const showToast = useAppStore((s) => s.showToast);
 
   useEffect(() => { setVars(getEffectiveVars()); }, []);
 
@@ -394,6 +397,15 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
                     <ToggleRow label="清屏时保留屏幕内容" value={preferences.terminalKeepOnClear} onChange={(v) => setPref("terminalKeepOnClear", v)} />
                     <NumberRow label="最大缓存行数" value={preferences.terminalScrollback} min={100} max={20000} onChange={(v) => setPref("terminalScrollback", v)} />
                   </div>
+                  <div className="pref-row">
+                    <div className="pref-info">
+                      <b>命令历史</b>
+                      <span>群发历史保存在本机，可能包含敏感参数，可随时清空</span>
+                    </div>
+                    <button className="btn tiny" onClick={() => { clearHistory(); showToast("命令历史已清空", "success"); }}>
+                      <Trash2 size={13} /> 清空历史
+                    </button>
+                  </div>
                   <button className="btn tiny pref-reset" onClick={() => { for (const k of Object.keys(DEFAULT_PREFERENCES) as (keyof Preferences)[]) setPref(k, DEFAULT_PREFERENCES[k] as never); }}><RotateCcw size={13} /> 恢复默认</button>
                 </section>
               </div>
@@ -410,6 +422,15 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
                       <Choice value={String(preferences.editorTabSize)} options={[{ v: "2", label: "2 空格" }, { v: "4", label: "4 空格" }]} onChange={(v) => setPref("editorTabSize", Number(v))} />
                     </div>
                     <ToggleRow label="自动换行" value={preferences.editorWordWrap} onChange={(v) => setPref("editorWordWrap", v)} />
+                  </div>
+                  <div className="pref-row">
+                    <div className="pref-info">
+                      <b>本地缓存</b>
+                      <span>草稿与远程文件内容以明文保存在本机，可随时清空</span>
+                    </div>
+                    <button className="btn tiny" onClick={() => { clearEditorCache(); showToast("编辑器缓存已清空", "success"); }}>
+                      <Trash2 size={13} /> 清空缓存
+                    </button>
                   </div>
                   <button className="btn tiny pref-reset" onClick={() => { for (const k of Object.keys(DEFAULT_PREFERENCES) as (keyof Preferences)[]) setPref(k, DEFAULT_PREFERENCES[k] as never); }}><RotateCcw size={13} /> 恢复默认</button>
                 </section>

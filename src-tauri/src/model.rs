@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 /// 前端 SessionConfig（types.ts:8-25）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,7 +20,11 @@ pub struct SessionConfig {
     /// 前端只是工作区分组名，不是远程目录
     pub directory: String,
     pub auth_method: String,
-    pub password: Option<String>,
+    /// 密码用 Zeroizing 承载：drop 时自动把堆内存清零，Debug 输出也会遮蔽内容。
+    /// 注意这只覆盖本进程内的副本；russh 认证接口要求 Into<String>，其内部副本无法控制。
+    pub password: Option<Zeroizing<String>>,
+    /// 凭据库中保存该密码时使用的原始连接 id；标签的 runtimeId 只是会话实例 id
+    pub secret_id: Option<String>,
     pub private_key_path: Option<String>,
     pub protocol: Option<String>,
     pub env: Option<HashMap<String, String>>,

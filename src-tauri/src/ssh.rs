@@ -88,8 +88,6 @@ struct SshSession {
     /// 与 Handler 共享，主动断开时先置位，避免回调里重复发 closed
     closed: Arc<AtomicBool>,
     routing: RoutingState,
-    /// 建连配置快照，供 SFTP/监控在需要时重开连接使用
-    config: SessionConfig,
 }
 
 /// sessionId -> 活动会话。std Mutex 只做极短的插入/取出，绝不跨 await 持有。
@@ -277,12 +275,14 @@ async fn authenticate(handle: &mut SessionHandle, config: &SessionConfig) -> Res
     let success = match config.auth_method.as_str() {
         "password" => {
             // 密码只存在于内存：前端保存连接时把密码交给 secrets 模块加密，
-            // 连接前再取回并随 config 传进来，因此这里拿不到就是真的没有
+            // 连接前再取回并随 config 传进来，因此这里拿不到就是真的没有。
+            // Zeroizing<String> 的 Deref 得到 &String；russh 认证接口要 Into<String>，
+            // 这里显式取 &str 交给它（russh 内部副本我们控制不到，但进程内的副本全程 Zeroizing）。
             let password = config.password.clone().unwrap_or_default();
             if password.is_empty() {
                 bail!("该连接没有可用密码：请编辑这个连接重新输入密码");
             }
-            handle.authenticate_password(&user, password).await?
+            handle.authenticate_password(&user, password.as_str()).await?
         }
         "privateKey" => {
             let raw = config.private_key_path.as_deref().unwrap_or("");
@@ -336,7 +336,7 @@ async fn authenticate(handle: &mut SessionHandle, config: &SessionConfig) -> Res
 
 /// `ssh_connect`：始终返回 Ok，失败通过 status(error) 告诉前端，
 /// 避免前端 `void driver.connect()` 产生未处理的 Promise rejection。
-pub async fn connect(sink: Sink, config: SessionConfig) -> Result<()> {
+pub async fn connect(sink: Sink, mut config: SessionConfig) -> Result<()> {
     let session_id = config.id.clone();
     sink.status(&session_id, "connecting", None);
 
@@ -390,6 +390,12 @@ pub async fn connect(sink: Sink, config: SessionConfig) -> Result<()> {
 
         authenticate(&mut handle, &config).await?;
 
+        // 认证完成后明文密码就不再需要了：置 None 会 drop 掉 Zeroizing，
+        // 自动把堆内存里的密码字节清零（不是仅丢弃引用），避免它跟着会话
+        // 在整个连接生命周期里一直留在内存中。
+        config.password = None;
+        config.secret_id = None;
+
         let channel = handle.channel_open_session().await?;
         // 标记这是终端通道，只有它的数据推给 xterm
         routing.set_terminal(channel.id());
@@ -412,7 +418,6 @@ pub async fn connect(sink: Sink, config: SessionConfig) -> Result<()> {
                     channel: Arc::new(AsyncMutex::new(channel)),
                     closed: closed.clone(),
                     routing: routing.clone(),
-                    config: config.clone(),
                 },
             );
         }
@@ -494,15 +499,6 @@ pub fn session_handle(session_id: &str) -> Result<(Arc<SessionHandle>, RoutingSt
         bail!("会话已断开: {}", session_id);
     }
     Ok((s.handle.clone(), s.routing.clone()))
-}
-
-/// 供 SFTP/监控模块使用：取会话配置快照（重连场景）。
-pub fn session_config(session_id: &str) -> Result<SessionConfig> {
-    let sessions = SESSIONS.lock().map_err(|_| anyhow!("会话表已损坏"))?;
-    let s = sessions
-        .get(session_id)
-        .ok_or_else(|| anyhow!("会话不存在或已断开: {}", session_id))?;
-    Ok(s.config.clone())
 }
 
 /// 开一个子通道并登记到路由（数据不会污染终端）。

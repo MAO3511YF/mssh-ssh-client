@@ -23,7 +23,8 @@ const COMMANDS_KEY = "mssh.v2.commands";
 const FILES_KEY = "mssh.v2.editorFiles";
 const REMOTE_KEY = "mssh.v2.remote";
 const HISTORY_KEY = "mssh.v2.history";
-// v3：左侧固定展开、不再有拖拽条；右侧监控面板默认收起，由顶栏按钮控制
+// 布局开关沿用 v3 key 以保留用户已有的右侧面板状态；
+// 左侧宽度现在可拖拽调宽但不可折叠，实际尺寸由 PanelGroup 的 mssh.layout.v4 自动保存
 const LAYOUT_KEY = "mssh.v3.layout";
 const PREFS_KEY = "mssh.v2.preferences";
 
@@ -48,30 +49,41 @@ function save(key: string, value: unknown) {
  *
  * 密码绝不写进 localStorage（那会以明文落在 WebView2 的 leveldb 里）：
  * 带密码的条目先交给系统加密存储（Windows DPAPI），再从落盘副本里剥掉。
- * 连接时由 withStoredPassword 取回。
+ * 连接时由 Rust 后端自行从凭据库取回，明文不再经过前端。
  */
-function persistSessions(sessions: SessionConfig[]) {
+function persistSessions(
+  sessions: SessionConfig[],
+  onSecretError?: (message: string, name?: string) => void,
+) {
   const stripped = sessions.map((s) => {
     if (s.password) {
-      void driver.secretSet(s.id, s.password).catch(() => {
-        /* 加密失败时仅丢失"记住密码"，不影响本次连接 */
+      void driver.secretSet(s.id, s.password, s.host, s.port, s.username).catch((e) => {
+        // 加密失败 = 密码没有落到凭据库：本次连接不受影响，但下次取不到密码。
+        // 必须明确告知用户，否则"以为记住了、下次却要重输"会像随机故障。
+        onSecretError?.(
+          `连接「${s.name}」的密码未能加密保存：${String(e)}。本次可用，下次需重新输入。`,
+          s.name,
+        );
       });
     }
-    const { password: _plaintext, ...rest } = s;
+    const { password: _plaintext, secretId: _secretId, ...rest } = s;
     return rest;
   });
   save(SESSIONS_KEY, stripped);
 }
 
-/** 连接前取回密码：从存储里加载出来的连接不再带 password 字段 */
-async function withStoredPassword(config: SessionConfig): Promise<SessionConfig> {
-  if (config.authMethod !== "password" || config.password) return config;
-  try {
-    const saved = await driver.secretGet(config.id);
-    return saved ? { ...config, password: saved } : config;
-  } catch {
-    return config;
-  }
+/**
+ * 升级迁移期的加密失败暂存。
+ * initialSessions() 在 store 创建前运行，拿不到 showToast；而 secretSet 是异步的，
+ * 失败回调往往在 store 建好之后才触发，所以先入队，再由 store 注册 flush 钩子统一提示。
+ */
+const pendingMigrationNames: string[] = [];
+let flushMigrationErrors: (() => void) | null = null;
+
+function queueMigrationError(_message: string, name?: string) {
+  pendingMigrationNames.push(name ?? "未知连接");
+  // 全量重发：Toast 是单条覆盖式，后一次提示始终包含所有失败连接。
+  flushMigrationErrors?.();
 }
 
 interface AppState {
@@ -133,6 +145,8 @@ interface AppState {
   // 编辑器
   upsertEditorFile: (file: EditorFile) => void;
   deleteEditorFile: (id: string) => void;
+  /** 清空编辑器草稿与远程文件缓存（两者都以明文落在 localStorage） */
+  clearEditorCache: () => void;
   importFileToHost: (host: string, file: EditorFile, remotePath: string) => void;
   // 远端文件操作（文件面板右键/拖拽）
   addRemoteFile: (host: string, file: RemoteFileEntry) => void;
@@ -141,6 +155,8 @@ interface AppState {
 
   // 命令 / 提示
   pushHistory: (command: string) => void;
+  /** 清空本机命令历史（可能含敏感参数，以明文存在 localStorage） */
+  clearHistory: () => void;
   setGlobalDraft: (command: string) => void;
   writeToWorkspace: (runtimeId: string, command: string, options?: { recordHistory?: boolean }) => void;
   showToast: (message: string, kind?: Toast["kind"]) => void;
@@ -160,7 +176,9 @@ function initialSessions(): SessionConfig[] {
   const kept = sessions.filter((s) => !s.id.startsWith("demo-"));
   // 老版本把密码明文写在 localStorage 里：迁移到加密存储并重写落盘副本
   const hasPlaintextPassword = kept.some((s) => s.password);
-  if (kept.length !== sessions.length || hasPlaintextPassword) persistSessions(kept);
+  if (kept.length !== sessions.length || hasPlaintextPassword) {
+    persistSessions(kept, queueMigrationError);
+  }
   return kept;
 }
 
@@ -210,17 +228,12 @@ function startSession(
       }
       setTimeout(() => {
         if (!get().workspaces.some((w) => w.runtimeId === runtimeId)) return;
-        void (async () => {
-          const resolved = await withStoredPassword(config);
-          await driver.connect({ ...resolved, id: runtimeId }, handlers);
-        })();
+        // secretId 指向原始连接：后端据此从 DPAPI 凭据库取密码，前端始终拿不到明文
+        void driver.connect({ ...config, id: runtimeId, secretId: config.id }, handlers);
       }, 900);
     },
   };
-  void (async () => {
-    const resolved = await withStoredPassword(config);
-    await driver.connect({ ...resolved, id: runtimeId }, handlers);
-  })();
+  void driver.connect({ ...config, id: runtimeId, secretId: config.id }, handlers);
   monitorRegistry.set(runtimeId, new Monitor(runtimeId));
 }
 
@@ -251,10 +264,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   seq: 0,
 
   upsertSession: (config) => {
+    // 改成密钥/agent/免密认证后，旧的密码凭据不再有用，立刻清掉避免长期残留
+    if (config.authMethod !== "password") {
+      void driver.secretRemove(config.id).catch(() => {});
+    }
     set((state) => {
       const idx = state.sessions.findIndex((s) => s.id === config.id);
       const sessions = idx >= 0 ? state.sessions.map((s) => (s.id === config.id ? config : s)) : [...state.sessions, config];
-      persistSessions(sessions);
+      persistSessions(sessions, (m) => get().showToast(m, "error"));
       return { sessions };
     });
   },
@@ -264,7 +281,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     void driver.secretRemove(id).catch(() => {});
     set((state) => {
       const sessions = state.sessions.filter((s) => s.id !== id);
-      persistSessions(sessions);
+      persistSessions(sessions, (m) => get().showToast(m, "error"));
       return { sessions };
     });
   },
@@ -278,7 +295,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const workspaces = state.workspaces.map((w) =>
         w.session.id === id ? { ...w, session: { ...w.session, name: v } } : w,
       );
-      persistSessions(sessions);
+      persistSessions(sessions, (m) => get().showToast(m, "error"));
       return { sessions, workspaces };
     });
   },
@@ -520,7 +537,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           : w,
       );
       save(FOLDERS_KEY, folders);
-      persistSessions(sessions);
+      persistSessions(sessions, (m) => get().showToast(m, "error"));
       return { folders, sessions, workspaces };
     });
   },
@@ -540,7 +557,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           : w,
       );
       save(FOLDERS_KEY, folders);
-      persistSessions(sessions);
+      persistSessions(sessions, (m) => get().showToast(m, "error"));
       return { folders, sessions, workspaces };
     });
   },
@@ -575,6 +592,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       save(FILES_KEY, editorFiles);
       return { editorFiles };
     });
+  },
+  clearEditorCache: () => {
+    save(FILES_KEY, []);
+    save(REMOTE_KEY, {});
+    set({ editorFiles: [], remoteFiles: {} });
   },
   importFileToHost: (host, file, remotePath) => {
     // 找到该 host 对应的活动工作区，用真实 SFTP 写入
@@ -650,6 +672,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { commandHistory };
     });
   },
+  clearHistory: () => {
+    save(HISTORY_KEY, []);
+    set({ commandHistory: [] });
+  },
   setGlobalDraft: (command) => set({ globalDraft: command }),
   writeToWorkspace: (runtimeId, command, options) => {
     const ws = get().workspaces.find((w) => w.runtimeId === runtimeId);
@@ -665,3 +691,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   showToast: (message, kind = "info") => set({ toast: { id: Date.now(), message, kind } }),
   clearToast: () => set({ toast: null }),
 }));
+
+// store 已就绪：注册迁移期的失败提示钩子。secretSet 是异步的，回调可能在此之后才触发，
+// 因此保留钩子持续消费队列；每次全量重发，保证用户看到的是含所有失败连接的完整提示。
+flushMigrationErrors = () => {
+  if (!pendingMigrationNames.length) return;
+  const names = [...new Set(pendingMigrationNames)].join("、");
+  useAppStore.getState().showToast(
+    `密码加密迁移失败：${names}。请编辑这些连接重新输入密码。`,
+    "error",
+  );
+};
+flushMigrationErrors();

@@ -34,6 +34,75 @@ fn strip_prefix_win(p: &str) -> Option<&str> {
     p.strip_prefix("~\\")
 }
 
+/// 把路径归一化为「实际指向」的路径：已存在的文件解析符号链接/junction，
+/// 不存在的新路径只做词法归一化（消掉 . 和 ..）。这样改名/软链接都绕不过防护。
+fn resolved_path(p: &Path) -> PathBuf {
+    if let Ok(real) = fs::canonicalize(p) {
+        return real;
+    }
+    let mut out = PathBuf::new();
+    for component in p.components() {
+        match component {
+            std::path::Component::ParentDir => { out.pop(); }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// 本地文件面板可以浏览全盘，但拒绝读写私钥 / 凭据文件的内容。
+///
+/// 这是纵深防御的一道关卡，不是系统权限边界：它拦住常见私钥命名、凭据文件、
+/// PEM/PPK 等容器以及以 PEM 头开头的私钥内容；目录列表仍可见，公钥（*.pub）可用。
+fn is_sensitive_file(p: &Path) -> bool {
+    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".pub") {
+        return false;
+    }
+    let stem = lower.split('.').next().unwrap_or("");
+    if matches!(stem, "id_rsa" | "id_dsa" | "id_ecdsa" | "id_ed25519") {
+        return true;
+    }
+    if matches!(
+        lower.as_str(),
+        "secrets.dat" | "credentials" | ".netrc" | ".npmrc" | ".pypirc"
+    ) {
+        return true;
+    }
+    // .env / .env.local / .env.production 等也常存放密钥与数据库口令
+    if lower == ".env" || lower.starts_with(".env.") {
+        return true;
+    }
+    matches!(
+        lower.rsplit('.').next().unwrap_or(""),
+        "pem" | "ppk" | "pfx" | "p12" | "kdbx" | "key" | "asc" | "jks" | "keystore"
+    )
+}
+
+/// 按文件头嗅探私钥内容，挡住「私钥改了个名字」的情况。
+fn looks_like_private_key(data: &[u8]) -> bool {
+    let head = &data[..data.len().min(1024)];
+    let text = String::from_utf8_lossy(head);
+    text.contains("PRIVATE KEY-----")
+        || text.contains("PuTTY-User-Key-File")
+        || text.contains("BEGIN PGP PRIVATE KEY BLOCK")
+}
+
+fn guard_sensitive(p: &Path) -> Result<()> {
+    let real = resolved_path(p);
+    if is_sensitive_file(&real) {
+        bail!(
+            "出于安全考虑，MSSH 拒绝通过本地文件面板读写私钥或凭据文件: {}",
+            p.display()
+        );
+    }
+    Ok(())
+}
+
 /// 归一化显示路径：本机主目录显示成 ~
 fn display_path(p: &Path) -> String {
     let raw = p.to_string_lossy().to_string();
@@ -115,7 +184,14 @@ fn looks_like_text(path: &Path, data: &[u8]) -> bool {
 /// 读本地文件（base64）
 pub fn read(path: &str) -> Result<FileContent> {
     let p = expand(path);
+    guard_sensitive(&p)?;
     let data = fs::read(&p).with_context(|| format!("读取本地文件失败: {}", p.display()))?;
+    if looks_like_private_key(&data) {
+        bail!(
+            "出于安全考虑，MSSH 拒绝通过本地文件面板读取疑似私钥的内容: {}",
+            p.display()
+        );
+    }
     Ok(FileContent {
         path: p.to_string_lossy().to_string(),
         content_base64: B64.encode(&data),
@@ -127,10 +203,18 @@ pub fn read(path: &str) -> Result<FileContent> {
 /// 写本地文件（base64）
 pub fn write(path: &str, data_b64: &str) -> Result<u64> {
     let p = expand(path);
+    guard_sensitive(&p)?;
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent).with_context(|| format!("创建目录失败: {}", parent.display()))?;
     }
     let bytes = B64.decode(data_b64).map_err(|e| anyhow::anyhow!("base64 解码失败: {}", e))?;
+    // 写入同样嗅探内容，防止把私钥内容另存成普通文件名后再读回
+    if looks_like_private_key(&bytes) {
+        bail!(
+            "出于安全考虑，MSSH 拒绝通过本地文件面板写入疑似私钥的内容: {}",
+            p.display()
+        );
+    }
     let len = bytes.len() as u64;
     let mut f = fs::File::create(&p).with_context(|| format!("创建本地文件失败: {}", p.display()))?;
     f.write_all(&bytes).with_context(|| format!("写入本地文件失败: {}", p.display()))?;
@@ -139,11 +223,14 @@ pub fn write(path: &str, data_b64: &str) -> Result<u64> {
 
 pub fn rename(from: &str, to: &str) -> Result<()> {
     let (a, b) = (expand(from), expand(to));
+    guard_sensitive(&a)?;
+    guard_sensitive(&b)?;
     fs::rename(&a, &b).with_context(|| format!("重命名失败: {} → {}", a.display(), b.display()))
 }
 
 pub fn remove(path: &str, is_dir: bool) -> Result<()> {
     let p = expand(path);
+    guard_sensitive(&p)?;
     if is_dir {
         fs::remove_dir_all(&p)
     } else {
@@ -154,6 +241,7 @@ pub fn remove(path: &str, is_dir: bool) -> Result<()> {
 
 pub fn create(path: &str, is_dir: bool) -> Result<()> {
     let p = expand(path);
+    guard_sensitive(&p)?;
     if is_dir {
         fs::create_dir_all(&p).with_context(|| format!("新建目录失败: {}", p.display()))
     } else {
@@ -162,5 +250,47 @@ pub fn create(path: &str, is_dir: bool) -> Result<()> {
             Ok(_) => Ok(()),
             Err(e) => bail!("新建文件失败: {}: {}", p.display(), e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sensitive_file_guard() {
+        // 常见私钥命名
+        assert!(is_sensitive_file(Path::new(r"C:\Users\me\.ssh\id_rsa")));
+        assert!(is_sensitive_file(Path::new("/home/me/.ssh/id_ed25519")));
+        assert!(is_sensitive_file(Path::new("/srv/app/.env.pem")));
+        assert!(is_sensitive_file(Path::new("/srv/app/server.key")));
+        assert!(is_sensitive_file(Path::new("/srv/app/certs.p12")));
+        assert!(is_sensitive_file(Path::new(r"C:\Users\me\AppData\Roaming\com.mssh.desktop\secrets.dat")));
+        // .env 系列常含数据库口令与 API key
+        assert!(is_sensitive_file(Path::new("/srv/app/.env")));
+        assert!(is_sensitive_file(Path::new("/srv/app/.env.production")));
+        // 公钥和普通配置文件不受影响
+        assert!(!is_sensitive_file(Path::new("/home/me/.ssh/id_ed25519.pub")));
+        assert!(!is_sensitive_file(Path::new("/srv/app/config.yaml")));
+        assert!(!is_sensitive_file(Path::new("/srv/app/README.md")));
+    }
+
+    #[test]
+    fn private_key_content_sniffing() {
+        assert!(looks_like_private_key(b"-----BEGIN OPENSSH PRIVATE KEY-----\nabc"));
+        assert!(looks_like_private_key(b"-----BEGIN RSA PRIVATE KEY-----\nabc"));
+        assert!(looks_like_private_key(b"PuTTY-User-Key-File-2: ssh-rsa\n"));
+        assert!(looks_like_private_key(b"-----BEGIN PGP PRIVATE KEY BLOCK-----\n"));
+        // 公钥与证书不应被误判
+        assert!(!looks_like_private_key(b"-----BEGIN PUBLIC KEY-----\nabc"));
+        assert!(!looks_like_private_key(b"-----BEGIN CERTIFICATE-----\nabc"));
+        assert!(!looks_like_private_key(b"hello world"));
+    }
+
+    #[test]
+    fn resolved_path_normalizes_dot_segments() {
+        // 不存在的路径走词法归一化，.. 与 . 不应成为绕过名单的跳板
+        let p = resolved_path(Path::new("/srv/app/notes/../.ssh/id_rsa"));
+        assert!(is_sensitive_file(&p));
     }
 }

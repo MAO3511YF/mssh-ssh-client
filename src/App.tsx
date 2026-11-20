@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Panel, PanelGroup } from "react-resizable-panels";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Copy, Minus, PanelRight, PanelRightClose, Settings2, Square, X } from "lucide-react";
 import { useAppStore } from "./store";
 import { loadTheme } from "./theme";
@@ -155,9 +155,9 @@ export default function App() {
       </header>
 
       <div className="app-body">
-        <PanelGroup direction="horizontal" autoSaveId="mssh.layout.v3">
-          {/* 左侧工作区固定展示：不可折叠，也不再有拖拽条 */}
-          <Panel order={1} defaultSize={20} minSize={20} maxSize={20} className="pg-side">
+        {/* v4：左侧宽度可拖拽，但保留最小宽度且不可折叠；右侧仍只由顶栏按钮控制 */}
+        <PanelGroup direction="horizontal" autoSaveId="mssh.layout.v4">
+          <Panel order={1} defaultSize={20} minSize={14} maxSize={38} collapsible={false} className="pg-side">
             <Sidebar
               onNew={() => setDialog({ kind: "new" })}
               onFolder={() => setDialog({ kind: "folder" })}
@@ -170,6 +170,11 @@ export default function App() {
               onDeleteFolder={(name) => setDialog({ kind: "deleteFolder", name })}
             />
           </Panel>
+
+          {/* 左侧唯一的分隔条：拖动只改宽度，最小 14% 保证侧栏永远不会消失 */}
+          <PanelResizeHandle className="resize-handle vertical side-handle">
+            <div className="resize-line" />
+          </PanelResizeHandle>
 
           <Panel order={2} defaultSize={80} minSize={30} className="pg-main">
             <main className="main-area">

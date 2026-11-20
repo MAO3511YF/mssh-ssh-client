@@ -17,6 +17,8 @@ export interface SessionConfig {
   authMethod: AuthType;
   password?: string;
   privateKeyPath?: string;
+  /** 仅连接时临时传给后端：凭据库中对应的原始连接 id（标签运行时 id 不带这个字段落盘） */
+  secretId?: string;
   protocol?: TransferProtocol;
   env?: Record<string, string>;
   note?: string;
@@ -315,9 +317,10 @@ export interface Driver {
 
   // ===== 凭据（密码不落 localStorage）=====
   /** 把密码交给系统加密存储（Windows DPAPI），只在当前用户下可解密 */
-  secretSet(id: string, password: string): Promise<void>;
-  /** 取回已保存的密码；没有则返回 null */
-  secretGet(id: string): Promise<string | null>;
+  /** 保存密码，并把密码与该连接的 host/port/username 绑定（后端连接时会校验） */
+  secretSet(id: string, password: string, host: string, port: number, username: string): Promise<void>;
+  /** 是否保存过密码（只回布尔值，明文不回传前端） */
+  secretHas(id: string): Promise<boolean>;
   /** 删除该连接保存的密码 */
   secretRemove(id: string): Promise<void>;
 }

@@ -1,6 +1,6 @@
 [package]
 name = "mssh"
-version = "1.0.4"
+version = "1.0.5"
 description = "MSSH - 现代化 SSH 客户端"
 authors = ["MSSH"]
 license = "MIT"
@@ -35,6 +35,8 @@ bytes = "1"
 # ~ 路径展开
 dirs = "6"
 anyhow = "1"
+# 密码等敏感字符串在 drop 时自动擦除内存（serde feature 让 Zeroizing<String> 可直接反序列化）
+zeroize = { version = "1", features = ["serde"] }
 # 时间格式化（监控快照的文件修改时间）
 chrono = "0.4"
 

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "MSSH",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "identifier": "com.mssh.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -12,9 +12,15 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self' asset:",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "img-src": "'self' asset: http://asset.localhost data: blob:",
+        "font-src": "'self' data:",
+        "style-src": "'self' 'unsafe-inline'"
+      }
     },
-    "withGlobalTauri": true
+    "withGlobalTauri": false
   },
   "bundle": {
     "active": true,

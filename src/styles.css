@@ -166,7 +166,11 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .resize-handle.horizontal { height: 4px; cursor: row-resize; }
 .resize-handle:hover, .resize-handle[data-resize-handle-active] { background: var(--accent); }
 .resize-line { position: absolute; inset: 0; }
-/* 左右两条侧栏收缩条已移除：左侧固定展示，右侧由顶栏按钮控制 */
+/* 左侧侧栏：可拖拽调整宽度，但不允许折叠；右侧仍由顶栏按钮控制，没有拖拽条 */
+.resize-handle.vertical.side-handle { width: 6px; background: transparent; }
+.side-handle .resize-line { inset: 0 2px; background: var(--line); transition: background .14s ease; }
+.side-handle:hover .resize-line,
+.side-handle[data-resize-handle-active] .resize-line { background: var(--accent); }
 /* 不设 flex-grow 过渡：面板在动画中途读取尺寸会把“恢复宽度”算成最小值 */
 .pg-side, .pg-main, .pg-monitor { display: flex; min-width: 0; min-height: 0; }
 .pg-main { flex-direction: column; }
@@ -611,6 +615,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .err { color: var(--danger); font-size: var(--text-xs); }
 /* 中性提示：用于「还没有工作区」这类引导文案，与红色错误区分开 */
 .field .hint { color: var(--muted); font-size: var(--text-xs); }
+.link-btn { padding: 0 0 0 4px; border: none; background: transparent; color: var(--accent); font-size: inherit; text-decoration: underline; }
+.link-btn:hover { color: var(--danger); }
 .input-with-action { display: flex; gap: 6px; }
 .input-with-action input { flex: 1; }
 .seg-group { display: flex; gap: 4px; flex-wrap: wrap; }

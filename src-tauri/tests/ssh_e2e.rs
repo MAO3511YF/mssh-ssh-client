@@ -10,6 +10,7 @@ use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{self, Auth, ChannelOpenHandle, Msg as ServerMsg, Server as _, Session as ServerSession};
 use russh::{Channel, ChannelId};
 use tokio::net::TcpListener;
+use zeroize::Zeroizing;
 
 #[derive(Clone, Default)]
 struct Recorder {
@@ -144,7 +145,8 @@ fn config(id: &str, host: &str, port: u16) -> SessionConfig {
         username: "tester".into(),
         directory: "测试".into(),
         auth_method: "password".into(),
-        password: Some("secret".into()),
+        password: Some(Zeroizing::new("secret".into())),
+        secret_id: None,
         private_key_path: None,
         protocol: None,
         env: None,

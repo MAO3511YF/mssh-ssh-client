@@ -95,12 +95,12 @@ export class TauriDriver implements Driver {
     return invoke<MonitorSnapshot>("monitor_collect", { sessionId });
   }
 
-  // ===== 凭据：密码交给后端 DPAPI 加密，不再写进 localStorage =====
-  secretSet(id: string, password: string) {
-    return invoke<void>("secret_set", { id, password });
+  // ===== 凭据：密码交给后端 DPAPI 加密，明文不回传前端 =====
+  secretSet(id: string, password: string, host: string, port: number, username: string) {
+    return invoke<void>("secret_set", { id, password, host, port, username });
   }
-  secretGet(id: string) {
-    return invoke<string | null>("secret_get", { id });
+  secretHas(id: string) {
+    return invoke<boolean>("secret_has", { id });
   }
   secretRemove(id: string) {
     return invoke<void>("secret_remove", { id });
