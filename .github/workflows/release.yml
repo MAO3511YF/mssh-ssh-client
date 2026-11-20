@@ -1,0 +1,75 @@
+name: Release
+
+# 推送 v* 标签时自动构建 Windows 安装包并创建 Release。
+# 这样发版不需要本地 PAT，也不需要把二进制提交进仓库。
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 依赖
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "MSSH ${{ github.ref_name }}"
+          releaseBody: |
+            Windows x64 安装包（NSIS），见下方 Assets。
+
+            ## 本版内容
+
+            ### 安全加固（P0）
+
+            - **主机密钥校验**：此前 `check_server_key` 无条件接受服务端密钥，等于零校验。现改为 TOFU —— 首次连接把指纹写入 `~/.ssh/known_hosts` 并提示；指纹不一致时**拒绝握手**并把新旧差异报给用户，可挡住中间人攻击。
+            - **密码不再明文落盘**：此前密码随连接配置写进 localStorage（WebView2 的 leveldb，任何本机程序都能读到）。现改用 Windows DPAPI 加密后存入 `%APPDATA%\com.mssh.desktop\secrets.dat`，密文与当前用户账户绑定。已有的明文密码会在启动时自动迁移。
+
+            ### 稳定性修复（P1）
+
+            - 连接增加 20 秒握手超时，对端不响应时不再永远停在「连接中」
+            - 启用 keepalive（30 秒，最多 3 次）以发现半开连接
+            - 修复监控历史按会话累积且从不清理导致的内存泄漏
+            - 修复两处数组越界 panic：NETSTAT 守卫 `< 4` 却取 `f[4]/f[5]`、diskstats 守卫 `< 8` 却取 `f[9]`
+            - 修复 SFTP 子通道在子系统启动失败时未释放路由条目
+
+            ### 行为变化
+
+            - 首次连接某台服务器，状态栏会短暂显示「已记录主机指纹 SHA256:…」，这是 TOFU 的正常提示
+            - 服务器重装系统后再连会被拒绝并提示指纹不一致（与系统 ssh 行为一致）；确认无误后删除 `~/.ssh/known_hosts` 中对应行再连即可
+
+            ### 上一版（v1.0.1）
+
+            - 修复重复双击启动会再开一个窗口：集成单实例机制，第二次启动只唤起已有窗口后静默退出
+            - 新增系统托盘：左键单击或双击唤起主窗口，右键菜单提供「显示主窗口 / 隐藏到后台 / 退出 MSSH」
+
+            Windows 11 默认把新出现的托盘图标收进任务栏「隐藏的图标」（`^`）。首次使用请点 `^` 把 MSSH 拖到任务栏，或到 设置 → 个性化 → 任务栏 → 其他系统托盘图标 中打开。
+          releaseDraft: false
+          prerelease: false
+          args: --bundles nsis
