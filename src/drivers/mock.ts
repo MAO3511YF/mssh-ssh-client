@@ -7,10 +7,6 @@ const FILES: Record<string, string[]> = {
   "/var/log": ["syslog 12M", "nginx/ ", "auth.log 340K", "dmesg 88K"],
 };
 
-function mockPrefs(): Record<string, unknown> {
-  try { return JSON.parse(localStorage.getItem("mssh.v2.preferences") ?? "{}"); } catch { return {}; }
-}
-
 /** 浏览器本地 Mock 驱动，让前端在没有 Tauri 后端时也能演示。 */
 export class MockDriver implements Driver {
   readonly kind = "mock" as const;
@@ -23,7 +19,8 @@ export class MockDriver implements Driver {
     handlers.onStatus(config.id, "connecting");
     await new Promise((r) => setTimeout(r, 420));
     handlers.onStatus(config.id, "connected");
-    if (mockPrefs().terminalPrompt !== false) {
+    // 预览模式固定打印一条欢迎信息：真实 SSH 的提示符来自服务器，客户端不该伪造
+    {
       const banner = [
         `\x1b[38;2;79;124;255mSSH\x1b[0m 已连接到 \x1b[1m${config.username}@${config.host}\x1b[0m:${config.port}`,
         `工作区: ${config.directory}`,
@@ -31,6 +28,11 @@ export class MockDriver implements Driver {
       ].join("\r\n");
       handlers.onData(config.id, banner);
     }
+  }
+
+  async testConnection(config: SessionConfig): Promise<string> {
+    await new Promise((r) => setTimeout(r, 420));
+    return `连接成功：${config.host}:${config.port}（演示模式，${config.authMethod} 认证通过）`;
   }
 
   write(sessionId: string, data: string) {
@@ -91,7 +93,7 @@ export class MockDriver implements Driver {
         out = "deploy";
         break;
       case "clear":
-        h.onData(sessionId, mockPrefs().terminalKeepOnClear === false ? "\x1b[2J\x1b[H\x1b[3J" : "\x1b[2J\x1b[H");
+        h.onData(sessionId, "\x1b[2J\x1b[H");
         out = "";
         break;
       case "exit":
@@ -117,6 +119,11 @@ export class MockDriver implements Driver {
   }
 
   // ===== SFTP：浏览器演示用本地假数据 =====
+  async sftpCanonicalize(_sessionId: string, path: string): Promise<string> {
+    // 演示数据：把 ~ 展开成 /home/deploy，其余路径原样回传
+    if (!path || path === ".") return "/home/deploy";
+    return path.startsWith("~") ? "/home/deploy" + path.slice(1) : path;
+  }
   async sftpList(_sessionId: string, path: string): Promise<RemoteFileEntry[]> {
     const names = FILES[path] ?? FILES["/home/deploy"] ?? [];
     return names.map((raw) => {
@@ -150,6 +157,7 @@ export class MockDriver implements Driver {
 
   // ===== 本地文件系统：浏览器演示用假数据 =====
   async fsHome(): Promise<string> { return "~/Downloads"; }
+  async fsDesktop(): Promise<string> { return "~/Desktop"; }
   async fsList(_path: string): Promise<RemoteFileEntry[]> {
     return [
       { name: "Documents", size: "—", modified: "—", type: "dir", path: "~/Downloads/Documents" },

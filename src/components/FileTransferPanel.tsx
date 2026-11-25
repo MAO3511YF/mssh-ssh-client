@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type MouseEvent } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import {
-  ArrowLeft, ArrowUpFromLine, ArrowDownToLine, Copy, Crosshair, File as FileIcon,
-  FilePlus2, Folder, FolderOpen, Pencil, RefreshCw, Trash2,
+  ArrowLeft, ArrowRight, ArrowUpFromLine, ArrowDownToLine, Copy, Crosshair, File as FileIcon,
+  FilePlus2, Folder, FolderOpen, Pencil, RefreshCw, Trash2, X,
 } from "lucide-react";
 import { driver } from "../drivers";
 import { useAppStore } from "../store";
+import { clipboardWriteText } from "../clipboard";
+import { onRemoteCd, requestEditorOpen, sessionCwd } from "../runtime";
 import type { RemoteFileEntry } from "../types";
+
+const LOCAL_CWD_KEY = "mssh.localCwd";
 
 interface Props {
   host: string;
@@ -40,22 +44,46 @@ function bytesToBase64(buf: ArrayBuffer): string {
   return btoa(bin);
 }
 
-/** base64 -> UTF-8 文本（用于编辑器打开文本文件） */
-function base64ToText(b64: string): string {
-  try {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return "";
-  }
-}
-
 function joinPath(base: string, name: string): string {
   if (base.endsWith("/") || base.endsWith("\\")) return base + name;
   return base + "/" + name;
 }
+
+/**
+ * 只取最后一段文件名。
+ *
+ * 远端目录列表里的名字完全由服务器决定：恶意或被入侵的服务器可以返回
+ * `..\..\Users\me\AppData\Roaming\...\startup\x.bat` 这类名字，直接拼进本地
+ * 路径就会写到任意位置。落盘/上传前一律先过这一层，取不到合法名字就拒绝。
+ *
+ * 两个细节：
+ * - 远端是 Unix，只按 `/` 分段，所以 `a\b.txt` 不会被切成 `b.txt`（静默改名同样是坑）；
+ * - 但 `\` 在 Windows 本地是路径分隔符，含它的名字会写进子目录 —— 这种直接拒绝，
+ *   由调用方提示"文件名不合法，已跳过"，而不是替用户猜一个名字。
+ */
+function childName(name: string): string {
+  const base = name.slice(name.lastIndexOf("/") + 1).trim();
+  if (!base || base === "." || base === "..") return "";
+  if (base.includes("\\") || /[\x00-\x1f]/.test(base)) return "";
+  return base;
+}
+
+/**
+ * 把路径安全地放进远端 shell 命令里。
+ *
+ * 目录名可能含空格、引号、`;`、`$()` 等元字符，裸拼进 `cd xxx` 就等于让服务器
+ * 上的文件名决定执行什么命令。这里用单引号包裹（内部单引号转义成 '\''），
+ * 开头的 ~ 保留在引号外以便 shell 展开。
+ */
+function shellPath(p: string): string {
+  const quote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+  if (p === "~") return "~";
+  if (p.startsWith("~/")) return `~/${quote(p.slice(2))}`;
+  // 绝对路径不会被当成选项；相对路径补 ./ 兜底，避免 -rf 这类名字变形
+  if (p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p)) return quote(p);
+  return quote(`./${p.replace(/^\.\//, "")}`);
+}
+
 function parentPath(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
@@ -66,6 +94,9 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
   const writeToWorkspace = useAppStore((s) => s.writeToWorkspace);
   const showToast = useAppStore((s) => s.showToast);
   const preferences = useAppStore((s) => s.preferences);
+  // 只有会话真正 connected 时后端 SESSIONS 里才有它；未连接就请求会报「会话不存在」
+  const connected = useAppStore((s) =>
+    s.workspaces.find((w) => w.runtimeId === runtimeId)?.status === "connected");
 
   const [log, setLog] = useState<string[]>([]);
   const [selected, setSelected] = useState<{ side: "local" | "remote"; item: Item } | null>(null);
@@ -77,12 +108,17 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
   const [createDir, setCreateDir] = useState(false);
   const [dragOver, setDragOver] = useState<"local" | "remote" | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 待确认的删除项：目录会被递归删除，必须先问一次 */
+  const [pendingDelete, setPendingDelete] = useState<{ side: "local" | "remote"; item: Item } | null>(null);
 
-  // 两侧的当前目录与历史栈
-  const [localCwd, setLocalCwd] = useState<string>("~");
+  // 两侧的当前目录与历史栈。本地默认落桌面，并记住上次用过的目录
+  const [localCwd, setLocalCwd] = useState<string>(() => localStorage.getItem(LOCAL_CWD_KEY) || "");
   const [remoteCwd, setRemoteCwd] = useState<string>(".");
   const [localItems, setLocalItems] = useState<Item[]>([]);
   const [remoteItems, setRemoteItems] = useState<Item[]>([]);
+  // 地址栏可编辑草稿：两端都显示当前路径，用户可直接输入路径回车/点箭头跳转
+  const [remotePathDraft, setRemotePathDraft] = useState<string>("");
+  const [localPathDraft, setLocalPathDraft] = useState<string>("");
 
   const menuRef = useRef<HTMLDivElement>(null);
   const push = useCallback((msg: string) => {
@@ -107,27 +143,118 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
   }, [showToast]);
 
   const loadRemote = useCallback(async (path: string) => {
+    // 会话尚未建立（含断线/重连中）时不发 SFTP 请求，避免刷「会话不存在」错误
+    if (!useAppStore.getState().workspaces.find((w) => w.runtimeId === runtimeId)?.status) return;
+    if (useAppStore.getState().workspaces.find((w) => w.runtimeId === runtimeId)?.status !== "connected") {
+      setRemoteItems([]);
+      return;
+    }
     try {
       const list = await driver.sftpList(runtimeId, path);
       setRemoteItems(list.map(toItem));
     } catch (e) {
-      showToast(`读取远程目录失败: ${String(e)}`, "error");
+      // 采集瞬间会话被断开：静默清空，等下次 connected 自动重载，不再刷错误弹窗
+      setRemoteItems([]);
     }
-  }, [runtimeId, showToast]);
+  }, [runtimeId]);
+
+  /**
+   * 统一的远程跳转：接受绝对路径 / ~ / 相对路径（含 ..），交给服务器 canonicalize 校验。
+   * - 目录存在 → 得到真实绝对路径，更新 remoteCwd 与基准并加载；
+   * - 不存在 → 提示并保持原目录，这正是 cd 失败时"不该跳"的语义。
+   */
+  const navigateRemote = useCallback(async (input: string) => {
+    const raw = input.trim();
+    if (!raw) return;
+    // 相对路径以当前真实目录为基准拼出完整路径；绝对/~ 路径直接交给服务器解析
+    const base = sessionCwd.get(runtimeId) ?? remoteCwd;
+    const candidate = raw.startsWith("/") || raw.startsWith("~")
+      ? raw
+      : (base === "." ? raw : `${base.replace(/\/+$/, "")}/${raw}`);
+    try {
+      const real = await driver.sftpCanonicalize(runtimeId, candidate);
+      sessionCwd.set(runtimeId, real);
+      setRemoteCwd(real);
+      setRemotePathDraft(real);
+    } catch (e) {
+      showToast(`目录不存在或不可访问: ${raw}`, "error");
+      // 输入框回填当前真实路径，避免停留在错误输入上
+      setRemotePathDraft(sessionCwd.get(runtimeId) ?? remoteCwd);
+    }
+  }, [runtimeId, remoteCwd, showToast]);
+
+  /** 本地跳转：输入路径（可为绝对/相对/~），用 fsList 校验是目录后才切换 */
+  const navigateLocal = useCallback(async (input: string) => {
+    const raw = input.trim();
+    if (!raw) return;
+    const candidate = raw.startsWith("~") || raw.includes(":") || raw.startsWith("/") || raw.startsWith("\\")
+      ? raw
+      : joinPath(localCwd, raw);
+    try {
+      await driver.fsList(candidate);
+      setLocalCwd(candidate);
+      setLocalPathDraft(candidate);
+    } catch {
+      showToast(`本地目录不存在或不可访问: ${raw}`, "error");
+      setLocalPathDraft(localCwd);
+    }
+  }, [localCwd, showToast]);
 
   useEffect(() => {
+    // 已有记忆目录就直接用；否则动态解析系统桌面（支持改盘符 / OneDrive 重定向）
+    if (localStorage.getItem(LOCAL_CWD_KEY)) return;
     let alive = true;
     (async () => {
-      try {
-        const home = await driver.fsHome();
-        if (alive) setLocalCwd(home);
-      } catch { /* 保持默认 ~ */ }
+      let path = "";
+      try { path = await driver.fsDesktop(); } catch { /* 回落 home */ }
+      if (!path) { try { path = await driver.fsHome(); } catch { /* 保持 ~ */ } }
+      if (alive && path) setLocalCwd(path);
+      else if (alive) setLocalCwd("~");
     })();
     return () => { alive = false; };
   }, []);
 
-  useEffect(() => { void loadLocal(localCwd); }, [localCwd, loadLocal]);
-  useEffect(() => { void loadRemote(remoteCwd); }, [remoteCwd, loadRemote]);
+  // 记住本地目录，下次打开直接回到这里
+  useEffect(() => {
+    if (localCwd && localCwd !== "~") localStorage.setItem(LOCAL_CWD_KEY, localCwd);
+    if (localCwd) void loadLocal(localCwd);
+  }, [localCwd, loadLocal]);
+  // 连接就绪后再加载；断线期间清空，重连成功（connected 翻转）时自动重新拉取目录
+  useEffect(() => { void loadRemote(remoteCwd); }, [remoteCwd, loadRemote, connected]);
+
+  // 连接首次就绪时，向服务器求证真实 home 绝对路径，作为地址栏显示与相对跳转基准。
+  // 必须用 "~" 而非 "."：SFTP 子系统的 "." 起点可能是根目录 "/"，用它当基准会让
+  // cd wenku 跳到 /wenku（根下）而不是 /home/ubuntu/wenku（home 下）。
+  useEffect(() => {
+    if (!connected || sessionCwd.has(runtimeId)) return;
+    let alive = true;
+    void driver.sftpCanonicalize(runtimeId, "~").then((home) => {
+      if (!alive) return;
+      sessionCwd.set(runtimeId, home);
+      setRemoteCwd(home);
+      setRemotePathDraft(home);
+    }).catch(() => {
+      // 个别服务器不支持 ~ 展开，退回 "."（至少能显示一个真实绝对路径）
+      if (!alive) return;
+      void driver.sftpCanonicalize(runtimeId, ".").then((home) => {
+        if (!alive) return;
+        sessionCwd.set(runtimeId, home);
+        setRemoteCwd(home);
+        setRemotePathDraft(home);
+      }).catch(() => { /* 稍后重连时会再试 */ });
+    });
+    return () => { alive = false; };
+  }, [connected, runtimeId]);
+
+  // 目录变化时同步两端地址栏草稿（双击进入、返回上级、cd 跟随都会更新）
+  useEffect(() => { setRemotePathDraft(remoteCwd); }, [remoteCwd]);
+  useEffect(() => { setLocalPathDraft(localCwd); }, [localCwd]);
+
+  // 终端 cd 跟随跳转：开关开启时，远端目录随终端里的 cd 命令同步（经服务器求证真实路径）
+  useEffect(() => {
+    if (!preferences.terminalFollowCd) return;
+    return onRemoteCd(runtimeId, (arg) => { void navigateRemote(arg); });
+  }, [runtimeId, preferences.terminalFollowCd, navigateRemote]);
 
   useEffect(() => {
     if (!menu) return;
@@ -147,7 +274,7 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
 
   const copyText = async (text: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await clipboardWriteText(text);
       showToast(`已复制${label}: ${text}`, "success");
     } catch {
       const ta = document.createElement("textarea");
@@ -162,13 +289,13 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
   const openItem = (side: "local" | "remote", item: Item) => {
     if (item.type !== "dir") return;
     if (side === "local") setLocalCwd(item.path);
-    else setRemoteCwd(item.path);
+    else { setRemoteCwd(item.path); sessionCwd.set(runtimeId, item.path); }
     setSelected(null);
   };
   const goUp = (side: "local" | "remote") => {
     const p = parentPath(cwdOf(side));
     if (side === "local") setLocalCwd(p);
-    else setRemoteCwd(p);
+    else { setRemoteCwd(p); sessionCwd.set(runtimeId, p); }
   };
 
   const onContextMenu = (e: MouseEvent, side: "local" | "remote", item: Item | null) => {
@@ -193,6 +320,7 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
     const name = renameValue.trim();
     const old = renaming.item;
     if (!name || name === old.name) { setRenaming(null); return; }
+    if (childName(name) !== name) { showToast("名称不能包含路径分隔符", "error"); return; }
     const to = joinPath(parentPath(old.path), name);
     try {
       if (renaming.side === "remote") await driver.sftpRename(runtimeId, old.path, to);
@@ -208,6 +336,7 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
     if (!creating) return;
     const name = createValue.trim();
     if (!name) { setCreating(null); return; }
+    if (childName(name) !== name) { showToast("名称不能包含路径分隔符", "error"); return; }
     const full = joinPath(cwdOf(creating), name);
     try {
       if (creating === "remote") await driver.sftpCreate(runtimeId, full, createDir);
@@ -218,9 +347,17 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
     setCreateValue(""); setCreating(null); setMenu(null); setCreateDir(false);
   };
 
-  const doDelete = async () => {
+  /** 右键删除只弹确认框：目录是递归删除，误点不可恢复 */
+  const askDelete = () => {
     if (!menu?.item) return;
-    const { side, item } = menu;
+    setPendingDelete({ side: menu.side, item: menu.item });
+    setMenu(null);
+  };
+
+  const runDelete = async () => {
+    if (!pendingDelete) return;
+    const { side, item } = pendingDelete;
+    setPendingDelete(null);
     try {
       if (side === "remote") await driver.sftpRemove(runtimeId, item.path, item.type === "dir");
       else await driver.fsRemove(item.path, item.type === "dir");
@@ -228,28 +365,30 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
       refresh(side);
     } catch (e) { showToast(`删除失败: ${String(e)}`, "error"); }
     setSelected(null);
-    setMenu(null);
   };
 
   const locateDir = () => {
     if (!menu?.item || menu.side !== "remote") return;
     const dir = menu.item.type === "dir" ? menu.item.path : parentPath(menu.item.path);
-    const cmd = `cd ${dir}`;
+    // 目录名可能含空格/引号/分号，必须转义后再交给 shell
+    const cmd = `cd ${shellPath(dir)}`;
     writeToWorkspace(runtimeId, cmd);
     push(`终端定位到 ${cmd}`);
-    showToast(`已在终端执行 ${cmd}`, "success");
+    showToast(`已在终端执行 cd`, "success");
     setMenu(null);
   };
 
   /** 上传：本地文件 -> 远端当前目录 */
   const uploadFile = async (srcPath: string, name: string) => {
+    const safe = childName(name);
+    if (!safe) { showToast(`文件名不合法，已跳过：${name}`, "error"); return; }
     setBusy(true);
     try {
       const content = await driver.fsRead(srcPath);
-      const dest = joinPath(remoteCwd, name);
+      const dest = joinPath(remoteCwd, safe);
       await driver.sftpWrite(runtimeId, dest, content.contentBase64);
-      push(`↑ 上传 ${name} → ${host}:${remoteCwd}`);
-      showToast(`已上传 ${name}`, "success");
+      push(`↑ 上传 ${safe} → ${host}:${remoteCwd}`);
+      showToast(`已上传 ${safe}`, "success");
       refresh("remote");
     } catch (e) { showToast(`上传失败: ${String(e)}`, "error"); }
     finally { setBusy(false); }
@@ -257,33 +396,25 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
 
   /** 下载：远端文件 -> 本地当前目录 */
   const downloadFile = async (srcPath: string, name: string) => {
+    // 名字来自远端服务器，只取最后一段，避免 ..\..\ 写到目录外
+    const safe = childName(name);
+    if (!safe) { showToast(`文件名不合法，已跳过：${name}`, "error"); return; }
     setBusy(true);
     try {
       const content = await driver.sftpRead(runtimeId, srcPath);
-      const dest = joinPath(localCwd, name);
+      const dest = joinPath(localCwd, safe);
       await driver.fsWrite(dest, content.contentBase64);
-      push(`↓ 下载 ${name} ← ${host}:${parentPath(srcPath)}`);
-      showToast(`已下载 ${name}`, "success");
+      push(`↓ 下载 ${safe} ← ${host}:${parentPath(srcPath)}`);
+      showToast(`已下载 ${safe}`, "success");
       refresh("local");
     } catch (e) { showToast(`下载失败: ${String(e)}`, "error"); }
     finally { setBusy(false); }
   };
 
-  /** 编辑器打开远端文本文件 */
-  const openInEditor = async (item: Item) => {
-    setBusy(true);
-    try {
-      const content = await driver.sftpRead(runtimeId, item.path);
-      const text = content.isText ? base64ToText(content.contentBase64) : "";
-      useAppStore.getState().upsertEditorFile({
-        id: `remote-${Date.now()}`,
-        name: item.name,
-        language: item.name.split(".").pop() ?? "纯文本",
-        content: text,
-      });
-      showToast(`已在编辑器打开 ${item.name}`, "success");
-    } catch (e) { showToast(`打开失败: ${String(e)}`, "error"); }
-    finally { setBusy(false); }
+  /** 在编辑器打开远端文本文件：编辑器直接用 SFTP 读写这个真实文件，
+   *  不再把内容复制成一份与服务器脱钩的本地草稿（那样改完根本不知道写回哪）。 */
+  const openInEditor = (item: Item) => {
+    requestEditorOpen({ runtimeId, path: item.path });
     setMenu(null);
   };
 
@@ -293,10 +424,12 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
     const files = Array.from(e.dataTransfer.files ?? []);
     if (files.length && target === "remote") {
       files.forEach((f) => {
+        const safe = childName(f.name);
+        if (!safe) { showToast(`文件名不合法，已跳过：${f.name}`, "error"); return; }
         f.arrayBuffer().then((buf) => {
-          const dest = joinPath(remoteCwd, f.name);
+          const dest = joinPath(remoteCwd, safe);
           driver.sftpWrite(runtimeId, dest, bytesToBase64(buf))
-            .then(() => { push(`↑ 上传 ${f.name}`); refresh("remote"); })
+            .then(() => { push(`↑ 上传 ${safe}`); refresh("remote"); })
             .catch((err) => showToast(`上传失败: ${String(err)}`, "error"));
         });
       });
@@ -316,40 +449,64 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
     e.dataTransfer.effectAllowed = "copy";
   };
 
-  const renderRows = (side: "local" | "remote") =>
-    itemsOf(side).map((f) => (
-      <div key={`${side}-${f.path}`}>
-        {renaming?.side === side && renaming.item.path === f.path ? (
-          <div className="tf-rename">
-            <input
-              value={renameValue} autoFocus
-              onChange={(e) => setRenameValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void commitRename(); if (e.key === "Escape") setRenaming(null); }}
-              onBlur={() => void commitRename()}
-            />
+  const renderRows = (side: "local" | "remote") => {
+    const cwd = cwdOf(side);
+    // 后端 sftp/read_dir 会过滤掉 . 与 ..，这里补一行显式的上级目录入口，
+    // 单击即可回到上一级（本地也一样），避免用户只能靠那个小返回箭头。
+    const parent = parentPath(cwd);
+    const showParent = side === "local" ? cwd !== "~" : cwd !== "." && cwd !== "/" && cwd !== "~";
+    const upRow = showParent ? (
+      <button
+        key={`${side}-up`}
+        className="tf-row tf-up-row"
+        onClick={() => goUp(side)}
+        title={`返回上级目录: ${parent}`}
+      >
+        <Folder size={15} className="tf-ico dir" />
+        <span className="tf-name">..</span>
+      </button>
+    ) : null;
+    return (
+      <>
+        {upRow}
+        {itemsOf(side).map((f) => (
+          <div key={`${side}-${f.path}`}>
+            {renaming?.side === side && renaming.item.path === f.path ? (
+              <div className="tf-rename">
+                <input
+                  value={renameValue} autoFocus
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void commitRename(); if (e.key === "Escape") setRenaming(null); }}
+                  onBlur={() => void commitRename()}
+                />
+              </div>
+            ) : (
+              <button
+                className={`tf-row ${selected?.side === side && selected.item.path === f.path ? "selected" : ""}`}
+                draggable={f.type === "file"}
+                onDragStart={(e) => onDragStart(e, side, f)}
+                onClick={() => setSelected({ side, item: f })}
+                onDoubleClick={() => openItem(side, f)}
+                onContextMenu={(e) => onContextMenu(e, side, f)}
+                title={f.path}
+              >
+                {f.type === "dir" ? <Folder size={15} className="tf-ico dir" /> : <FileIcon size={15} className="tf-ico file" />}
+                <span className="tf-name">{f.name}</span>
+                {f.size && <span className="tf-size">{f.size}</span>}
+              </button>
+            )}
           </div>
-        ) : (
-          <button
-            className={`tf-row ${selected?.side === side && selected.item.path === f.path ? "selected" : ""}`}
-            draggable={f.type === "file"}
-            onDragStart={(e) => onDragStart(e, side, f)}
-            onClick={() => setSelected({ side, item: f })}
-            onDoubleClick={() => openItem(side, f)}
-            onContextMenu={(e) => onContextMenu(e, side, f)}
-            title={f.path}
-          >
-            {f.type === "dir" ? <Folder size={15} className="tf-ico dir" /> : <FileIcon size={15} className="tf-ico file" />}
-            <span className="tf-name">{f.name}</span>
-            {f.size && <span className="tf-size">{f.size}</span>}
-          </button>
-        )}
-      </div>
-    ));
+        ))}
+      </>
+    );
+  };
 
   const renderColumn = (side: "local" | "remote") => {
     const cwd = cwdOf(side);
     const label = side === "local" ? "本地" : protocol.toUpperCase();
-    const display = side === "local" ? cwd : `${host}:${cwd}`;
+    const draft = side === "local" ? localPathDraft : remotePathDraft;
+    const setDraft = side === "local" ? setLocalPathDraft : setRemotePathDraft;
+    const navigate = side === "local" ? navigateLocal : navigateRemote;
     return (
       <div
         className={`tf-col ${dragOver === side ? "drop-active" : ""}`}
@@ -360,11 +517,22 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
       >
         <div className="tf-col-head">
           <button className="tf-nav-up" title="返回上级" onClick={() => goUp(side)}><ArrowLeft size={14} /></button>
-          <button className="tf-path-copy" onClick={() => void copyText(cwd, side === "local" ? "本地路径" : "远程路径")} title="复制路径">
+          <div className="tf-path-edit" title="输入路径后按回车或点箭头跳转到该目录">
             <span className={`tf-path-tag ${side}`}>{label}</span>
-            <span className="tf-path-text">{display}</span>
-            <Copy size={12} />
-          </button>
+            <input
+              className="tf-path-input"
+              value={draft}
+              spellCheck={false}
+              placeholder="输入目录路径…"
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); void navigate(draft); }
+                if (e.key === "Escape") { setDraft(cwd); (e.target as HTMLInputElement).blur(); }
+              }}
+            />
+            <button className="tf-path-go" title="跳转到该目录" onClick={() => void navigate(draft)}><ArrowRight size={13} /></button>
+            <button className="tf-path-copy-btn" title="复制当前路径" onClick={() => void copyText(cwd, side === "local" ? "本地路径" : "远程路径")}><Copy size={12} /></button>
+          </div>
           <button className="icon-btn tiny tf-refresh" title="刷新" onClick={() => refresh(side)}><RefreshCw size={14} /></button>
         </div>
         <div className="tf-list">
@@ -430,7 +598,7 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
                 <button className="tf-context-item" onClick={locateDir}><Crosshair size={14} /> 定位到所在目录</button>
               )}
               <button className="tf-context-item" onClick={startRename}><Pencil size={14} /> 重命名</button>
-              <button className="tf-context-item danger" onClick={() => void doDelete()}><Trash2 size={14} /> 删除</button>
+              <button className="tf-context-item danger" onClick={askDelete}><Trash2 size={14} /> 删除</button>
             </>
           ) : (
             <>
@@ -446,6 +614,37 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
               </button>
             </>
           )}
+        </div>
+      )}
+
+      {pendingDelete && (
+        <div className="modal-overlay" onPointerDown={(e) => { if (e.target === e.currentTarget) setPendingDelete(null); }}>
+          <div className="modal small" role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <div><h2>删除{pendingDelete.item.type === "dir" ? "目录" : "文件"}</h2></div>
+              <button className="icon-btn" aria-label="关闭" onClick={() => setPendingDelete(null)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <p className="confirm-text">
+                确定删除{pendingDelete.side === "remote" ? "远端" : "本地"}的 <b>{pendingDelete.item.name}</b> 吗？
+              </p>
+              <p className="confirm-hint">{pendingDelete.item.path}</p>
+              {pendingDelete.item.type === "dir" && (
+                <p className="confirm-hint">
+                  <b>
+                    {pendingDelete.side === "local"
+                      ? "本地目录会被递归删除，里面的所有内容无法恢复。"
+                      : "远端只能删除空目录；非空目录请先在终端里处理。"}
+                  </b>
+                </p>
+              )}
+            </div>
+            <div className="modal-foot">
+              <span className="spacer" />
+              <button className="btn secondary" onClick={() => setPendingDelete(null)}>取消</button>
+              <button className="btn danger-solid" onClick={() => void runDelete()}><Trash2 size={15} /> 删除</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

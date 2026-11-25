@@ -1,8 +1,6 @@
 //! 与前端 `src/types.ts` 对齐的数据结构。
 //! Tauri 把 JS 的 camelCase 参数转成 Rust 字段名，serde 的 rename_all 负责反序列化。
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -27,11 +25,20 @@ pub struct SessionConfig {
     pub secret_id: Option<String>,
     pub private_key_path: Option<String>,
     pub protocol: Option<String>,
-    pub env: Option<HashMap<String, String>>,
-    pub note: Option<String>,
+    /// 侧栏 / 标签页圆点颜色（纯展示用，后端不解读）
     pub color: Option<String>,
     /// JS number 是毫秒时间戳
     pub created_at: i64,
+    /// 本次连接是否已得到用户「信任这台新主机」的确认。
+    /// 首次连接（known_hosts 里没有该主机）时后端会中止握手并回传指纹，
+    /// 只有用户在界面上确认后前端才会带这个标记重连——不再静默自动信任。
+    #[serde(default)]
+    pub trust_new_host_key: bool,
+    /// 本次连接是否已得到用户「这台服务器的指纹变了，我认新指纹」的确认。
+    /// 指纹变化比"新主机"更危险（可能是中间人），因此前端会弹高危确认框，
+    /// 只有用户明确确认后后端才会删掉旧记录并写入新指纹。
+    #[serde(default)]
+    pub trust_changed_host_key: bool,
 }
 
 /// ssh://data 事件 payload
@@ -70,7 +77,8 @@ pub struct RemoteFileEntry {
     pub size: String,
     /// 修改时间字符串
     pub modified: String,
-    /// "dir" | "file"
+    /// "dir" | "file"；序列化为 "type" 与前端 RemoteFileEntry 对齐
+    #[serde(rename = "type")]
     pub kind: String,
     /// 完整远端路径
     pub path: String,
@@ -125,6 +133,25 @@ pub struct FilesystemEntry {
     pub total: f64,
 }
 
+/// 真实 GPU 信息（来自 nvidia-smi）。采集不到时为 None，前端据此隐藏整块 GPU 面板，
+/// 绝不用 CPU 推导或写死示例值冒充。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuInfo {
+    /// 显卡型号，如 "NVIDIA GeForce RTX 3080"
+    pub name: String,
+    /// GPU 利用率 0-100
+    pub utilization: f64,
+    /// 显存已用 MiB
+    pub mem_used: f64,
+    /// 显存总量 MiB
+    pub mem_total: f64,
+    /// 温度 °C；读不到为 None
+    pub temperature: Option<f64>,
+    /// 功耗 W；读不到为 None
+    pub power: Option<f64>,
+}
+
 /// 前端 MonitorSnapshot（types.ts:227-248）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,6 +168,8 @@ pub struct MonitorSnapshot {
     pub swap_used: f64,
     pub swap_total: f64,
     pub filesystems: Vec<FilesystemEntry>,
+    /// 真实 GPU 信息；无 GPU / 采集失败为 None
+    pub gpu: Option<GpuInfo>,
     pub disk_read: f64,
     pub disk_write: f64,
     pub net_in: f64,
@@ -149,4 +178,27 @@ pub struct MonitorSnapshot {
     pub connections: Vec<NetConnection>,
     pub history: Vec<f64>,
     pub net_history: Vec<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归测试：文件名类别字段序列化为 "type" 而非 "kind"。
+    /// 曾因后端字段叫 kind、前端读 type，导致真机 SFTP 列表图标错乱、双击进不了目录。
+    #[test]
+    fn remote_file_entry_serializes_as_type() {
+        let e = RemoteFileEntry {
+            name: "home".into(),
+            size: "—".into(),
+            modified: "—".into(),
+            kind: "dir".into(),
+            path: "/home/ubuntu".into(),
+            content: None,
+        };
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["type"], "dir", "必须有 type 字段，JSON={json}");
+        assert!(json.get("kind").is_none(), "不应出现 kind 字段，JSON={json}");
+        assert!(json.get("content").is_none(), "content 为 None 时应省略，JSON={json}");
+    }
 }

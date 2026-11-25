@@ -55,3 +55,22 @@ export async function quitWindow(): Promise<boolean> {
   await win.destroy();
   return true;
 }
+
+/**
+ * 拦截系统级关闭（Alt+F4、任务栏「关闭窗口」、系统关机前的关闭请求），
+ * 统一交给应用自己的关闭流程（询问 / 退出 / 隐藏到后台）。
+ * 否则系统关闭会直接销毁窗口，前端来不及提示，SSH 会话也被硬生生掐断。
+ * 注意：quitWindow 用的是 destroy()，不会触发 closeRequested，不会死循环。
+ */
+export async function onNativeCloseRequested(handler: () => void): Promise<() => void> {
+  const win = await native();
+  if (!win) return () => {};
+  try {
+    return await win.onCloseRequested((event) => {
+      event.preventDefault();
+      handler();
+    });
+  } catch {
+    return () => {};
+  }
+}

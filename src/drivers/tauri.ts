@@ -34,8 +34,16 @@ export class TauriDriver implements Driver {
     await invoke("ssh_connect", { config });
   }
 
+  testConnection(config: SessionConfig): Promise<string> {
+    return invoke<string>("ssh_test", { config });
+  }
+
   write(sessionId: string, data: string) {
-    void invoke("ssh_write", { sessionId, data });
+    // 写入失败（会话已断开）不能静默吞掉：交给 handlers 提示并触发重连，
+    // 否则用户打字石沉大海、界面却看起来还连着。
+    void invoke("ssh_write", { sessionId, data }).catch((e) => {
+      this.handlers.get(sessionId)?.onWriteError?.(sessionId, String(e));
+    });
   }
 
   resize(sessionId: string, cols: number, rows: number) {
@@ -48,6 +56,9 @@ export class TauriDriver implements Driver {
   }
 
   // ===== SFTP 文件传输 =====
+  sftpCanonicalize(sessionId: string, path: string) {
+    return invoke<string>("sftp_canonicalize", { sessionId, path });
+  }
   sftpList(sessionId: string, path: string) {
     return invoke<RemoteFileEntry[]>("sftp_list", { sessionId, path });
   }
@@ -70,6 +81,9 @@ export class TauriDriver implements Driver {
   // ===== 本地文件系统 =====
   fsHome() {
     return invoke<string>("fs_home");
+  }
+  fsDesktop() {
+    return invoke<string>("fs_desktop");
   }
   fsList(path: string) {
     return invoke<RemoteFileEntry[]>("fs_list", { path });

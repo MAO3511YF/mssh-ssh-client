@@ -3,18 +3,44 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { driver } from "./drivers";
 import { useAppStore } from "./store";
+import { TERMINAL_FONT_STACK } from "./constants";
 import { buildTerminalTheme } from "./theme";
+import { clipboardReadText, clipboardWriteText } from "./clipboard";
+import { emitRemoteCd } from "./runtime";
 
 export interface TerminalHandle {
   terminal: Terminal;
   dispose: () => void;
 }
 
+/**
+ * 从一行已敲完的命令里提取 cd 的参数原文（交给文件面板用 SFTP 向服务器求证真实路径）。
+ * 支持：cd /abs、cd rel、cd ..、cd ~、cd（回家）、引号包裹、行尾注释。
+ * 注意：这里刻意不做任何路径拼接/规范化——相对路径的基准是服务器上的真实 cwd，
+ * 前端无法可靠得知，必须交给 SFTP canonicalize，否则会算出 ../../../../ 这种假路径。
+ */
+function parseCdArg(line: string): string | null {
+  const cmd = line.trim();
+  // 只认行首的 cd（含 cd 后跟空白），避免把 `echo cd xxx` 之类误判
+  const match = cmd.match(/^cd(?:\s+(.*))?$/);
+  if (!match) return null;
+  let arg = (match[1] ?? "").trim();
+  // 行尾注释：# 前是空白
+  arg = arg.replace(/\s+#.*$/, "").trim();
+  // 去掉成对引号
+  if ((arg.startsWith('"') && arg.endsWith('"')) || (arg.startsWith("'") && arg.endsWith("'"))) {
+    arg = arg.slice(1, -1);
+  }
+  // cd 无参数 = 回家；cd - 前端无法解析（依赖 shell 的 OLDPWD），跳过
+  if (arg === "-") return null;
+  return arg || "~";
+}
+
 export function createTerminal(container: HTMLElement, sessionId: string): TerminalHandle {
   const prefs = useAppStore.getState().preferences;
   const terminal = new Terminal({
-    fontFamily: '"SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace',
-    fontSize: 12.5,
+    fontFamily: prefs.terminalFont || TERMINAL_FONT_STACK,
+    fontSize: prefs.terminalFontSize || 12.5,
     lineHeight: 1.45,
     letterSpacing: 0.3,
     cursorBlink: true,
@@ -30,19 +56,51 @@ export function createTerminal(container: HTMLElement, sessionId: string): Termi
   });
 
   const pasteClipboard = () => {
-    void navigator.clipboard?.readText().then((text) => {
+    void clipboardReadText().then((text) => {
       if (text) driver.write(sessionId, text);
     }).catch(() => { /* clipboard unavailable */ });
   };
 
+  // cd 跟随跳转：缓存当前输入行，回车时只把 cd 的参数原文广播给文件面板，
+  // 由文件面板用 SFTP canonicalize 向服务器求证真实路径（目录不存在则不跳）。
+  //
+  // xterm 的 onData 是逐字符的原始按键流，得自己维护行缓冲。关键点是「拿不准就放弃」：
+  // 一旦出现方向键/Home/End/Tab/Ctrl+W 等会移动光标或改写整行的按键，本行就不再解析——
+  // 否则缓冲与屏幕上的真实命令行不一致，可能把 cd 到一个错误但存在的目录。
+  let lineBuf: string[] = [];
+  let lineCursor = 0;
+  let lineUnknown = false;
+  const resetLine = () => { lineBuf = []; lineCursor = 0; lineUnknown = false; };
+
   const dataSub = terminal.onData((data) => {
     driver.write(sessionId, data);
+    if (!useAppStore.getState().preferences.terminalFollowCd) return;
+    for (const ch of data) {
+      if (ch === "\r" || ch === "\n") {
+        const text = lineBuf.join("");
+        const usable = !lineUnknown;
+        resetLine();
+        if (!usable) continue;
+        const arg = parseCdArg(text);
+        if (arg) emitRemoteCd(sessionId, arg);
+        continue;
+      }
+      if (ch === "\x1b") { lineUnknown = true; continue; }        // 方向键/功能键等转义序列
+      if (ch === "\x7f" || ch === "\b") {
+        if (lineCursor > 0) { lineBuf.splice(lineCursor - 1, 1); lineCursor -= 1; }
+        continue;
+      }
+      if (ch === "\x03" || ch === "\x15") { resetLine(); continue; } // Ctrl+C / Ctrl+U 放弃当前行
+      if (ch < " ") { lineUnknown = true; continue; }               // Tab 补全等其余控制字符：不再可信
+      lineBuf.splice(lineCursor, 0, ch);
+      lineCursor += 1;
+    }
   });
 
   const selectionSub = prefs.terminalCopyOnSelect
     ? terminal.onSelectionChange(() => {
       const text = terminal.getSelection();
-      if (text) void navigator.clipboard?.writeText(text).catch(() => { /* ignore */ });
+      if (text) void clipboardWriteText(text).catch(() => { /* ignore */ });
     })
     : null;
 
@@ -102,7 +160,16 @@ export function createTerminal(container: HTMLElement, sessionId: string): Termi
     } catch { /* audio unavailable */ }
   });
   const onPrefs = () => {
-    terminal.options.scrollback = useAppStore.getState().preferences.terminalScrollback;
+    const p = useAppStore.getState().preferences;
+    terminal.options.scrollback = p.terminalScrollback;
+    terminal.options.fontFamily = p.terminalFont || TERMINAL_FONT_STACK;
+    terminal.options.fontSize = p.terminalFontSize || 12.5;
+    // 字号/字体变了，行列数跟着变：必须重新 fit 并把这个尺寸告诉服务器，
+    // 否则远端仍按旧列宽排版，长命令会错行（或右侧被裁掉）。
+    try {
+      fit.fit();
+      driver.resize(sessionId, terminal.cols, terminal.rows);
+    } catch { /* 未布局完成时忽略 */ }
   };
   window.addEventListener("mssh:themechange", onTheme);
   window.addEventListener("mssh:prefs-changed", onPrefs);

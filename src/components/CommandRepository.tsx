@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Pencil, Play, Plus, Search, Trash2, X } from "lucide-react";
+import { Pencil, Play, Plus, Search, TextCursorInput, Trash2, X } from "lucide-react";
 import { useAppStore } from "../store";
 import type { SavedCommand } from "../types";
 import { useModal } from "../useModal";
@@ -89,8 +89,8 @@ export function CommandRepositoryContent({ onClose }: Props) {
                   {c.description && <div className="repo-row-desc">{c.description}</div>}
                 </div>
                 <div className="repo-row-actions">
-                  <button className="icon-btn tiny" title="填入群发栏" onClick={() => { setDraft(c.command); showToast("已填入群发栏", "info"); onClose(); }}><Plus size={14} /></button>
-                  <button className="icon-btn tiny" title="发送" onClick={() => send(c)}><Play size={14} /></button>
+                  <button className="icon-btn tiny" title="填入群发栏（不立即执行）" onClick={() => { setDraft(c.command); showToast("已填入群发栏", "info"); onClose(); }}><TextCursorInput size={14} /></button>
+                  <button className="icon-btn tiny" title="立即发送到当前终端" onClick={() => send(c)}><Play size={14} /></button>
                   <button className="icon-btn tiny" title="编辑" onClick={() => startEdit(c)}><Pencil size={14} /></button>
                   <button className="icon-btn tiny danger" title="删除" onClick={() => remove(c.id)}><Trash2 size={14} /></button>
                 </div>

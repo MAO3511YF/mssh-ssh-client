@@ -90,6 +90,29 @@ where
     result
 }
 
+/// 把远端路径解析成服务器上的真实绝对路径（展开 ~、相对段、..、符号链接）。
+/// 注意：SFTP 的 realpath 并不认识 "~"，含 ~ 的路径必须走 OpenSSH 的
+/// expand-path@openssh.com 扩展，否则会把 ~ 当普通相对路径解析到根目录。
+/// 不存在或非目录时由服务器返回错误——cd 跟随据此判断命令是否真的成功。
+pub async fn canonicalize(session_id: &str, path: &str) -> Result<String> {
+    let path = if path.trim().is_empty() { ".".to_string() } else { path.to_string() };
+    with_sftp(session_id, move |sftp| {
+        let path = path.clone();
+        Box::pin(async move {
+            if path.contains('~') {
+                // expand_path 展开 ~/~user 并返回规范化绝对路径；服务器不支持该扩展时返回 Ok(None)
+                if let Some(expanded) = sftp.expand_path(&path).await? {
+                    return Ok(expanded);
+                }
+            }
+            sftp.canonicalize(&path)
+                .await
+                .with_context(|| format!("路径不存在或不可访问: {}", path))
+        })
+    })
+    .await
+}
+
 /// 列出远端目录
 pub async fn list(session_id: &str, path: &str) -> Result<Vec<RemoteFileEntry>> {
     let path = if path.trim().is_empty() { ".".to_string() } else { path.to_string() };
@@ -141,11 +164,24 @@ pub async fn list(session_id: &str, path: &str) -> Result<Vec<RemoteFileEntry>> 
 }
 
 /// 读取远端文件（base64 编码，避免二进制损坏）
+/// 单次读取上限：编辑器/预览把整个文件读进内存，几十 MB 的日志会直接拖垮界面。
+/// 超限时在真正 read 之前就拒绝，避免先分配再报错。
+const MAX_READ_BYTES: u64 = 4 * 1024 * 1024;
+
 pub async fn read(session_id: &str, path: &str) -> Result<FileContent> {
     let path = path.to_string();
     with_sftp(session_id, move |sftp| {
         let path = path.clone();
         Box::pin(async move {
+            if let Ok(meta) = sftp.metadata(&path).await {
+                if meta.len() > MAX_READ_BYTES {
+                    anyhow::bail!(
+                        "文件 {} MB，超过上限 {} MB，不打开（可下载后本地查看）",
+                        meta.len() / 1048576,
+                        MAX_READ_BYTES / 1048576
+                    );
+                }
+            }
             let data = sftp
                 .read(&path)
                 .await
@@ -163,6 +199,9 @@ pub async fn read(session_id: &str, path: &str) -> Result<FileContent> {
 }
 
 /// 写入远端文件（前端上传/编辑器保存都走这里）
+///
+/// 不能直接用 `SftpSession::write`：它内部只带 `OpenFlags::WRITE`，既不会创建新文件
+/// （保存新脚本时必然 NoSuchFile），也不会截断旧内容（改短的文件尾部会残留旧字节）。
 pub async fn write(session_id: &str, path: &str, data_b64: &str) -> Result<u64> {
     let path = path.to_string();
     let bytes = B64.decode(data_b64).map_err(|e| anyhow::anyhow!("文件内容 base64 解码失败: {}", e))?;
@@ -171,9 +210,19 @@ pub async fn write(session_id: &str, path: &str, data_b64: &str) -> Result<u64> 
         let path = path.clone();
         let bytes = bytes.clone();
         Box::pin(async move {
-            sftp.write(&path, &bytes)
+            let mut file = sftp
+                .open_with_flags(
+                    &path,
+                    OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+                )
+                .await
+                .with_context(|| format!("无法写入 {}（目录不存在或没有写权限）", path))?;
+            file.write_all(&bytes)
                 .await
                 .with_context(|| format!("写入文件失败: {}", path))?;
+            file.close()
+                .await
+                .with_context(|| format!("关闭文件失败: {}", path))?;
             Ok(len)
         })
     })

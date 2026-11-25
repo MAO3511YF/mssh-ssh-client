@@ -48,73 +48,67 @@ impl EventSink for TauriSink {
     }
 }
 
+/// 若本次连接缺少密码且使用密码认证，从凭据库取回并校验 host/port/username 绑定。
+/// 返回 Ok(()) 表示可以继续；Err(message) 是应展示给用户的错误。
+/// 安全要点：凭据与保存时的连接参数绑定，渲染层即使被注入也无法把某连接的密码
+/// 送到另一台服务器；解密结果留在 Rust 进程内，绝不回传 WebView。
+fn fill_stored_password(config: &mut SessionConfig) -> std::result::Result<(), String> {
+    if config.auth_method != "password" {
+        return Ok(());
+    }
+    let password_missing = config.password.as_ref().map(|p| p.is_empty()).unwrap_or(true);
+    if !password_missing {
+        return Ok(());
+    }
+    let credential_id = config.secret_id.as_deref().unwrap_or(&config.id);
+    match crate::secrets::get(credential_id) {
+        Ok(Some(cred)) => {
+            let binding = cred.binding;
+            if !binding.is_bound() {
+                return Err(format!(
+                    "连接「{}」的密码由旧版本保存，缺少主机绑定保护。请编辑该连接重新输入密码后保存。",
+                    config.name
+                ));
+            }
+            if !config.host.eq_ignore_ascii_case(&binding.host)
+                || config.port != binding.port
+                || config.username != binding.username
+            {
+                return Err(format!(
+                    "拒绝连接：已保存密码仅可用于 {}@{}:{}，本次请求却是 {}@{}:{}。\
+                     若确实要改目标地址，请编辑连接重新输入密码。",
+                    binding.username, binding.host, binding.port,
+                    config.username, config.host, config.port
+                ));
+            }
+            config.password = Some(cred.password);
+            Ok(())
+        }
+        Ok(None) => Ok(()), // 交给后续认证统一报「没有可用密码」
+        Err(e) => Err(format!("读取已保存密码失败: {e:#}")),
+    }
+}
+
 #[tauri::command]
 pub async fn ssh_connect(app: AppHandle, mut config: SessionConfig) -> Result<(), String> {
     let sink = Arc::new(TauriSink(app));
     let session_id = config.id.clone();
 
-    // 密码只在这里从 DPAPI 凭据库取出，解密结果留在 Rust 进程内，绝不回传 WebView。
-    // secret_id 是保存连接时的原始 id；多标签会话的 runtimeId 只是会话实例标识。
-    let password_missing = config
-        .password
-        .as_ref()
-        .map(|p| p.is_empty())
-        .unwrap_or(true);
-    if config.auth_method == "password" && password_missing {
-        let credential_id = config.secret_id.as_deref().unwrap_or(&config.id);
-        match crate::secrets::get(credential_id) {
-            Ok(Some(cred)) => {
-                // 安全要点：凭据与保存时的 host/port/username 绑定。渲染层若被注入，
-                // 可以把 secret_id 换成任意连接、把 host 换成攻击者服务器来骗取密码；
-                // 这里用后端自己保存的绑定做校验，不一致立刻拒绝，明文绝不出进程。
-                let binding = cred.binding;
-                if !binding.is_bound() {
-                    sink.status(
-                        &session_id,
-                        "error",
-                        Some(format!(
-                            "连接「{}」的密码由旧版本保存，缺少主机绑定保护。请编辑该连接重新输入密码后保存。",
-                            config.name
-                        )),
-                    );
-                    return Ok(());
-                }
-                if !config.host.eq_ignore_ascii_case(&binding.host)
-                    || config.port != binding.port
-                    || config.username != binding.username
-                {
-                    sink.status(
-                        &session_id,
-                        "error",
-                        Some(format!(
-                            "拒绝连接：已保存密码仅可用于 {}@{}:{}，本次请求却是 {}@{}:{}。\
-                             若确实要改目标地址，请编辑连接重新输入密码。",
-                            binding.username, binding.host, binding.port,
-                            config.username, config.host, config.port
-                        )),
-                    );
-                    return Ok(());
-                }
-                config.password = Some(cred.password);
-            }
-            Ok(None) => {
-                // 没有已保存密码：交给 ssh::connect 统一报「没有可用密码」，
-                // 与手动输入密码为空时的表现一致。
-            }
-            Err(e) => {
-                // 与 ssh::connect 的约定一致：失败只经 status(error) 告知前端，
-                // command 恒返回 Ok，避免前端 void driver.connect() 产生未处理 rejection，
-                // 也让 UI 能显示错误而不是永远停在 "connecting"。
-                sink.status(
-                    &session_id,
-                    "error",
-                    Some(format!("读取已保存密码失败: {e:#}")),
-                );
-                return Ok(());
-            }
-        }
+    if let Err(message) = fill_stored_password(&mut config) {
+        // 失败只经 status(error) 告知前端，command 恒返回 Ok，避免未处理 rejection，
+        // 也让 UI 能显示错误而不是永远停在 "connecting"。
+        sink.status(&session_id, "error", Some(message));
+        return Ok(());
     }
     ssh::connect(sink, config).await.map_err(|e| format!("{e:#}"))
+}
+
+/// 测试连接：真实建连 + 认证后立即断开，返回可读结果（不写入会话表）。
+#[tauri::command]
+pub async fn ssh_test(mut config: SessionConfig) -> Result<String, String> {
+    // 测试的是表单当前值；密码为空时同样支持从凭据库取回（带绑定校验）
+    fill_stored_password(&mut config)?;
+    ssh::test_connection(&config).await.map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -140,6 +134,11 @@ pub async fn ssh_disconnect(app: AppHandle, session_id: String) -> Result<(), St
 }
 
 // ===== SFTP =====
+
+#[tauri::command]
+pub async fn sftp_canonicalize(session_id: String, path: String) -> Result<String, String> {
+    sftp::canonicalize(&session_id, &path).await.map_err(|e| format!("{e:#}"))
+}
 
 #[tauri::command]
 pub async fn sftp_list(session_id: String, path: String) -> Result<Vec<RemoteFileEntry>, String> {
@@ -193,6 +192,12 @@ pub async fn monitor_collect(session_id: String) -> Result<MonitorSnapshot, Stri
 #[tauri::command]
 pub fn fs_home() -> String {
     fs_local::home()
+}
+
+/// 当前用户桌面目录（本地文件面板默认落点）
+#[tauri::command]
+pub fn fs_desktop() -> String {
+    fs_local::desktop()
 }
 
 #[tauri::command]

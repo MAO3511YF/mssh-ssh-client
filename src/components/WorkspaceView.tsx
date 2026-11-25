@@ -82,7 +82,15 @@ function PaneView({ pane, index, paneCount, maxPanes, byId, focused }: {
 }) {
   const dnd = useContext(DndContext)!;
   const setFocusedPane = useAppStore((s) => s.setFocusedPane);
+  const allWorkspaces = useAppStore((s) => s.workspaces);
   const activeWs = pane.activeTab ? byId.get(pane.activeTab) : undefined;
+  /** 同一连接开多个终端时给标签编号（腾讯云 · 2），否则两个标签完全同名分不清 */
+  const tabLabel = (rid: string) => {
+    const ws = byId.get(rid)!;
+    const same = allWorkspaces.filter((w) => w.session.id === ws.session.id);
+    if (same.length < 2) return ws.session.name;
+    return `${ws.session.name} · ${same.findIndex((w) => w.runtimeId === rid) + 1}`;
+  };
   /** 窗格里只有一个终端时不允许分屏：那只会把同一个会话复制一份 */
   const canSplit = pane.tabs.length > 1;
   const atMax = paneCount >= maxPanes;
@@ -142,7 +150,7 @@ function PaneView({ pane, index, paneCount, maxPanes, byId, focused }: {
                 title={`${ws.session.username}@${ws.session.host}`}
               >
                 <span className="wtab-dot" style={{ background: ws.session.color ?? "var(--accent)" }} />
-                <span className="wtab-name">{ws.session.name}</span>
+                <span className="wtab-name">{tabLabel(rid)}</span>
                 {(() => {
                   const StatusIcon = STATUS_ICON[ws.status] ?? WifiOff;
                   return (

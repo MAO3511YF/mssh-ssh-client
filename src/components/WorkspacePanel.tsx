@@ -26,24 +26,28 @@ export function WorkspacePanel({ workspace, active }: Props) {
         <div className="wpanel-term">
           <TerminalView sessionId={runtimeId} />
         </div>
+        {/* 收起态：终端底部一条与终端同色的切换条，常亮按钮占布局高度，不覆盖终端文字 */}
         {!filesOpen && (
-          <button className="files-expand" onClick={() => toggleFiles(runtimeId)} title="展开文件面板">
-            <ChevronUp size={9} />
-          </button>
+          <div className="files-toggle-bar">
+            <button className="files-grip" onClick={() => toggleFiles(runtimeId)} title="展开文件面板">
+              <ChevronUp size={14} />
+            </button>
+          </div>
         )}
       </Panel>
 
       {filesOpen && (
         <>
-          <PanelResizeHandle className="resize-handle horizontal files-handle">
-            <div className="resize-line" />
+          {/* 展开态：这条切换条同时是可拖拽的分隔条，文件面板紧贴其下，中间无空白。
+              不画贯穿整宽的强调线——那会像一道横贯终端的彩色裂缝，只在按钮上给反馈。 */}
+          <PanelResizeHandle className="resize-handle horizontal files-handle files-toggle-bar">
             <button
-              className="files-collapse"
+              className="files-grip"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => toggleFiles(runtimeId)}
               title="收起文件面板"
             >
-              <ChevronDown size={9} />
+              <ChevronDown size={14} />
             </button>
           </PanelResizeHandle>
           <Panel defaultSize={38} minSize={15} className="wpanel-files-panel">

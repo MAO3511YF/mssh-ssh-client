@@ -35,6 +35,7 @@ export function Sidebar({
   const workspaces = useAppStore((s) => s.workspaces);
   const writeToWorkspace = useAppStore((s) => s.writeToWorkspace);
   const showToast = useAppStore((s) => s.showToast);
+  const preferences = useAppStore((s) => s.preferences);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");
@@ -111,7 +112,7 @@ export function Sidebar({
       <div className="side-section">
         <button className="side-new" onClick={onNew}>
           <Plus size={16} />
-          <span>New Connection</span>
+          <span>新建连接</span>
         </button>
       </div>
 
@@ -169,7 +170,7 @@ export function Sidebar({
         </div>
         <div className="side-tree-body">
           {groups.length === 0 ? (
-            <div className="empty-list">还没有工作区，点右上角图标新建</div>
+            <div className="empty-list">还没有工作区，点右侧的文件夹图标新建</div>
           ) : groups.map((g) => (
             <div className="dir-group" key={g.name}>
               <div className="dir-row">
@@ -207,8 +208,23 @@ export function Sidebar({
       </div>
 
       <div className="side-foot">
-        <div className="side-foot-item"><Server size={14} /><span>{sessions.length} 个连接</span></div>
-        <div className="side-foot-item"><Terminal size={14} /><span>{workspaces.length} 个工作区</span></div>
+        <div className="side-foot-stats">
+          <div className="side-foot-item" title="已保存的连接数"><Server size={14} /><span>{sessions.length} 个连接</span></div>
+          <div className="side-foot-item" title="当前打开的终端数"><Terminal size={14} /><span>{workspaces.length} 个终端</span></div>
+        </div>
+        {/* 品牌文字放在右侧；图标已去掉，保持底栏简洁 */}
+        {preferences.brandVisible && (
+          <span
+            className="brand-name side-brand-name"
+            style={{
+              fontFamily: preferences.brandFont || undefined,
+              fontSize: `${preferences.brandFontSize}px`,
+              fontWeight: preferences.brandWeight,
+              color: preferences.brandColor || undefined,
+              letterSpacing: `${preferences.brandSpacing}px`,
+            }}
+          >{preferences.brandText || "MSSH"}</span>
+        )}
       </div>
 
       {menu && (
@@ -225,6 +241,15 @@ export function Sidebar({
             </>
           ) : (
             <>
+              <button onClick={() => {
+                const s = sessions.find((x) => x.id === menu.id);
+                if (s) openWorkspace(s);
+              }}><Terminal size={14} /> 打开连接</button>
+              <button onClick={() => {
+                const s = sessions.find((x) => x.id === menu.id);
+                if (s) openWorkspace(s, { newSession: true });
+              }}><Plus size={14} /> 再开一个终端</button>
+              <div className="ctx-sep" />
               <button onClick={() => onEditSession(menu.id)}><SquarePen size={14} /> 编辑连接</button>
               <button onClick={() => onRenameSession(menu.id)}><Pencil size={14} /> 重命名</button>
               <button className="danger" onClick={() => onDeleteSession(menu.id)}><Trash2 size={14} /> 删除连接</button>

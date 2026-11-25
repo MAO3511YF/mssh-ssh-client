@@ -27,6 +27,74 @@ const HISTORY_KEY = "mssh.v2.history";
 // 左侧宽度现在可拖拽调宽但不可折叠，实际尺寸由 PanelGroup 的 mssh.layout.v4 自动保存
 const LAYOUT_KEY = "mssh.v3.layout";
 const PREFS_KEY = "mssh.v2.preferences";
+const RECONNECT_MIGRATION_KEY = "mssh.v2.reconnectMigrated";
+
+/**
+ * 主动关闭 / 应用退出的会话标记。
+ *
+ * 后端在「用户主动断开」时同样会发 ssh://closed（mock 驱动一致），
+ * 前端若不加区分，就会把用户自己关掉的连接当成意外掉线，
+ * 弹出「连接已断开，正在重新连接…」——用户刚关标签又被提示重连，纯属噪音。
+ * 这里记录"这次断开是我自己要求的"，让 closed / 写入失败回调直接忽略。
+ */
+const closingSessions = new Set<string>();
+let appShuttingDown = false;
+/** 打开工作区用的自增序号，保证同一毫秒内多次打开也得到唯一的 runtimeId */
+let openSeq = 0;
+
+/** 该会话的掉线事件是否应被忽略（主动关闭或应用正在退出） */
+function isIntentionalClose(runtimeId: string): boolean {
+  return appShuttingDown || closingSessions.has(runtimeId);
+}
+
+/**
+ * 未知主机密钥时后端回传的标记（与 ssh.rs 的 HOSTKEY_UNKNOWN_PREFIX 对应）。
+ * 收到它说明这台主机第一次连接、用户还没确认过指纹：此时绝不能自动重连，
+ * 否则会反复握手失败并刷出「正在重新连接」。
+ */
+const HOSTKEY_UNKNOWN_PREFIX = "HOSTKEY_UNKNOWN|";
+const HOSTKEY_CHANGED_PREFIX = "HOSTKEY_CHANGED|";
+const pendingHostKey = new Set<string>();
+
+export interface HostKeyPrompt {
+  runtimeId: string;
+  name: string;
+  host: string;
+  port: number;
+  fingerprint: string;
+  /** new=首次连接；changed=指纹变了（更可能是中间人，需要更强的警示） */
+  kind: "new" | "changed";
+}
+
+/**
+ * 弹出指纹确认框。
+ *
+ * 弹窗是单槽（一次只显示一个），同时连多台新主机时后来的进队列排队——
+ * 之前直接覆盖 `hostKeyPrompt`，前一台的指纹就永远看不到了，只能靠用户关掉标签重开。
+ */
+function showHostKeyPrompt(
+  prompt: HostKeyPrompt,
+  get: () => AppState,
+  set: (partial: Partial<AppState>) => void,
+) {
+  const current = get().hostKeyPrompt;
+  if (current && current.runtimeId !== prompt.runtimeId) {
+    // 同一条会话可能因重试多次触发同一个错误，队列里只留一份
+    if (get().hostKeyQueue.some((p) => p.runtimeId === prompt.runtimeId)) return;
+    set({ hostKeyQueue: [...get().hostKeyQueue, prompt] });
+    return;
+  }
+  set({ hostKeyPrompt: prompt });
+}
+
+/** 关掉当前确认框后，接着显示队列里的下一个 */
+function advanceHostKeyPrompt(
+  get: () => AppState,
+  set: (partial: Partial<AppState>) => void,
+) {
+  const [next, ...rest] = get().hostKeyQueue;
+  set({ hostKeyPrompt: next ?? null, hostKeyQueue: rest });
+}
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -104,6 +172,10 @@ interface AppState {
   globalDraft: string;
   toast: Toast | null;
   seq: number;
+  /** 首次连接 / 指纹变化待确认的主机（null 表示没有待确认的对话框） */
+  hostKeyPrompt: HostKeyPrompt | null;
+  /** 同时连多台新主机时排队等确认的后续条目 */
+  hostKeyQueue: HostKeyPrompt[];
 
   // 会话
   upsertSession: (config: SessionConfig) => void;
@@ -111,7 +183,12 @@ interface AppState {
   renameSession: (id: string, name: string) => void;
 
   // 工作区
-  openWorkspace: (config: SessionConfig) => void;
+  /**
+   * 打开一个连接。
+   * 默认行为（点侧栏）是「已打开就聚焦」；`newSession: true` 时忽略已有标签，
+   * 用同一个连接配置再建一个独立会话——同一台服务器开多个终端时互不影响。
+   */
+  openWorkspace: (config: SessionConfig, options?: { newSession?: boolean }) => void;
   closeWorkspace: (runtimeId: string) => Promise<void>;
   focusWorkspace: (runtimeId: string) => void;
   setStatus: (runtimeId: string, status: ConnectionStatus, message?: string) => void;
@@ -161,10 +238,13 @@ interface AppState {
   writeToWorkspace: (runtimeId: string, command: string, options?: { recordHistory?: boolean }) => void;
   showToast: (message: string, kind?: Toast["kind"]) => void;
   clearToast: () => void;
+  /** 确认信任首次连接的主机指纹并重连 */
+  confirmHostKey: () => void;
+  /** 放弃信任：只关闭对话框，不建立连接 */
+  dismissHostKey: () => void;
 }
 
-function formatBytes(text: string): string {
-  const n = new Blob([text]).size;
+function formatBytes(text: string): string {  const n = new Blob([text]).size;
   if (n < 1024) return `${n}B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}K`;
   return `${(n / 1024 / 1024).toFixed(1)}M`;
@@ -214,27 +294,106 @@ function startSession(
   runtimeId: string,
   get: () => AppState,
   set: (partial: Partial<AppState>) => void,
+  options?: { trustNewHostKey?: boolean; trustChangedHostKey?: boolean },
 ) {
+  // 同一 runtimeId 重新建连（关闭后重开、断线重连）时清掉旧的"主动关闭"标记
+  closingSessions.delete(runtimeId);
+  // 断线事件与写入失败可能几乎同时到达；更关键的是打字时每个字符都会写失败，
+  // 若每次都触发重连就会形成"重连风暴"、会话反复重建反而彻底打不了字。
+  // 用 reconnecting 标志 + 单个 timer 双重去重：一次故障只重连一次，直到 connected 或明确失败才解锁。
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnecting = false;
+  const scheduleReconnect = (message: string, delay: number) => {
+    if (reconnecting || reconnectTimer !== null) return;
+    // 用户主动关闭或程序正在退出：不重连、不提示
+    if (isIntentionalClose(runtimeId)) return;
+    // 等待用户确认主机指纹期间：重连只会再撞一次同一堵墙
+    if (pendingHostKey.has(runtimeId)) return;
+    if (!get().workspaces.some((w) => w.runtimeId === runtimeId)) return;
+    reconnecting = true;
+    get().showToast(message, "info");
+    get().setStatus(runtimeId, "connecting");
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (!get().workspaces.some((w) => w.runtimeId === runtimeId)) { reconnecting = false; return; }
+      // secretId 指向原始连接：后端据此从 DPAPI 凭据库取密码，前端始终拿不到明文
+      void driver.connect({ ...config, id: runtimeId, secretId: config.id }, handlers)
+        .catch(() => {
+          reconnecting = false;
+          get().setStatus(runtimeId, "error", "重连失败，点击该会话可重试");
+        });
+    }, delay);
+  };
+
   const handlers = {
     onData: (sid: string, data: string) => {
+      if (isIntentionalClose(runtimeId)) return;
       appendSessionLog(sid, data);
       terminalRegistry.get(sid)?.write(data);
     },
-    onStatus: (sid: string, status: ConnectionStatus, message?: string) => get().setStatus(sid, status, message),
+    onStatus: (sid: string, status: ConnectionStatus, message?: string) => {
+      if (isIntentionalClose(runtimeId)) return;
+      // 主机密钥问题：后端中止握手并回传指纹，这里弹确认框，绝不自动重连
+      const isUnknownHost = status === "error" && message?.startsWith(HOSTKEY_UNKNOWN_PREFIX);
+      const isChangedHost = status === "error" && message?.startsWith(HOSTKEY_CHANGED_PREFIX);
+      if (isUnknownHost || isChangedHost) {
+        const prefix = isChangedHost ? HOSTKEY_CHANGED_PREFIX : HOSTKEY_UNKNOWN_PREFIX;
+        pendingHostKey.add(runtimeId);
+        // 可能已有一个重连 timer 在排队：取消它，别让它在弹窗弹出后再撞一次握手
+        reconnecting = false;
+        if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        showHostKeyPrompt({
+          runtimeId,
+          name: config.name,
+          host: config.host,
+          port: config.port,
+          fingerprint: (message ?? "").slice(prefix.length).trim(),
+          kind: isChangedHost ? "changed" : "new",
+        }, get, set);
+        get().setStatus(sid, "error", isChangedHost ? "等待确认主机指纹变化" : "等待确认主机指纹");
+        return;
+      }
+      if (status === "connected") {
+        // 重连成功：解锁，并取消可能还在排队的重连
+        reconnecting = false;
+        if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        pendingHostKey.delete(runtimeId);
+      }
+      get().setStatus(sid, status, message);
+    },
     onClosed: () => {
+      // 主动关闭的会话：后端也会发 closed，这里必须直接忽略，
+      // 否则用户关掉标签后还会看到「正在重新连接」的提示。
+      if (isIntentionalClose(runtimeId)) return;
       if (!get().preferences.terminalAutoReconnect) {
         set({ toast: { id: Date.now(), message: "连接已关闭", kind: "info" } });
         return;
       }
-      setTimeout(() => {
-        if (!get().workspaces.some((w) => w.runtimeId === runtimeId)) return;
-        // secretId 指向原始连接：后端据此从 DPAPI 凭据库取密码，前端始终拿不到明文
-        void driver.connect({ ...config, id: runtimeId, secretId: config.id }, handlers);
-      }, 900);
+      scheduleReconnect(`连接已断开，正在重新连接「${config.name}」…`, 900);
+    },
+    // 服务器重启/链路超时后，后端会话被移除，此时打字会因会话不存在而写入失败。
+    // 这是"看着连着却无法输入"的直接原因：必须提示并主动重连，而不是静默丢弃。
+    onWriteError: (_sid: string, _error: string) => {
+      if (isIntentionalClose(runtimeId)) return;
+      scheduleReconnect(`命令未能送达，连接已断开，正在重新连接「${config.name}」…`, 250);
     },
   };
-  void driver.connect({ ...config, id: runtimeId, secretId: config.id }, handlers);
-  monitorRegistry.set(runtimeId, new Monitor(runtimeId));
+  void driver.connect(
+    {
+      ...config,
+      id: runtimeId,
+      secretId: config.id,
+      // 只有用户在弹窗里确认过指纹，才允许后端写/替换 known_hosts 里的记录
+      trustNewHostKey: options?.trustNewHostKey === true,
+      trustChangedHostKey: options?.trustChangedHostKey === true,
+    },
+    handlers,
+  );
+  // Monitor 必须复用：面板只按 sessionId 订阅一次，若重连时 dispose+new 一个新实例，
+  // 旧订阅不会迁移过去，面板将永远停在"未连接"。实例只在首次创建，会话重连照常 tick 即可。
+  if (!monitorRegistry.has(runtimeId)) {
+    monitorRegistry.set(runtimeId, new Monitor(runtimeId));
+  }
 }
 
 
@@ -245,14 +404,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   panes: EMPTY_PANES,
   focusedPane: 0,
   layout: load(LAYOUT_KEY, { leftCollapsed: false, rightCollapsed: true }),
-  preferences: { ...DEFAULT_PREFERENCES, ...load(PREFS_KEY, {}) },
+  // 旧版本把自动重连默认关掉，导致断线后无法再输入（会话已失效但界面看着还连着）。
+  // 一次性迁移：仅首次把历史 false 翻成 true，之后用户可在设置里自行开关，不再被覆盖。
+  preferences: (() => {
+    const stored = load<Partial<Preferences>>(PREFS_KEY, {});
+    const merged = { ...DEFAULT_PREFERENCES, ...stored };
+    if (!localStorage.getItem(RECONNECT_MIGRATION_KEY)) {
+      merged.terminalAutoReconnect = true;
+      save(PREFS_KEY, merged);
+      localStorage.setItem(RECONNECT_MIGRATION_KEY, "1");
+    }
+    return merged;
+  })(),
   setPreference: (key, value) => {
-    set((state) => {
-      const preferences = { ...state.preferences, [key]: value };
-      save(PREFS_KEY, preferences);
-      window.dispatchEvent(new Event("mssh:prefs-changed"));
-      return { preferences };
-    });
+    set((state) => ({ preferences: { ...state.preferences, [key]: value } }));
+    // 必须先落库再广播：set 的 updater 里派发事件时新值还没合并进 store，
+    // 监听方（终端字体/字号、回滚行数）读到的仍是旧值，表现为"设置改了但界面没变"。
+    save(PREFS_KEY, get().preferences);
+    window.dispatchEvent(new Event("mssh:prefs-changed"));
   },
   folders: initialFolders(),
   commands: load(COMMANDS_KEY, DEFAULT_COMMANDS),
@@ -262,6 +431,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   globalDraft: "",
   toast: null,
   seq: 0,
+  hostKeyPrompt: null,
+  hostKeyQueue: [],
 
   upsertSession: (config) => {
     // 改成密钥/agent/免密认证后，旧的密码凭据不再有用，立刻清掉避免长期残留
@@ -300,8 +471,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  openWorkspace: (config) => {
-    const existing = get().workspaces.find((w) => w.session.id === config.id);
+  openWorkspace: (config, options) => {
+    const existing = options?.newSession
+      ? undefined
+      : get().workspaces.find((w) => w.session.id === config.id);
     if (existing) {
       set((state) => {
         const paneIndex = Math.max(0, state.panes.findIndex((p) => p.tabs.includes(existing.runtimeId)));
@@ -313,9 +486,16 @@ export const useAppStore = create<AppState>((set, get) => ({
             : i === paneIndex ? { ...p, activeTab: existing.runtimeId } : p)),
         };
       });
+      // 已关闭/异常的工作区只切焦点会导致后端会话已不存在、SFTP 与监控持续报错，
+      // 且旧界面没有重连入口，只能刷新整页。这里复用原 runtimeId 直接重建连接。
+      if (existing.status === "closed" || existing.status === "error") {
+        startSession(config, existing.runtimeId, get, set);
+        get().showToast(`正在重新连接「${config.name}」…`, "info");
+      }
       return;
     }
-    const runtimeId = `${config.id}-${Date.now()}`;
+    // 同一毫秒内连点两次「再开一个终端」也要拿到不同 id，否则两个工作区撞 key
+    const runtimeId = `${config.id}-${Date.now()}-${(openSeq += 1)}`;
     const workspace: Workspace = {
       runtimeId,
       session: config,
@@ -332,7 +512,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   closeWorkspace: async (runtimeId) => {
-    await driver.disconnect(runtimeId);
+    // 先登记为"主动关闭"：后端断开时会回发 ssh://closed，
+    // 不登记就会被当作异常掉线并弹「正在重新连接」。
+    closingSessions.add(runtimeId);
+    // 关掉会话时同步清掉它挂着 / 排队的指纹确认框，避免弹窗指向已不存在的标签
+    pendingHostKey.delete(runtimeId);
+    if (get().hostKeyPrompt?.runtimeId === runtimeId || get().hostKeyQueue.some((p) => p.runtimeId === runtimeId)) {
+      const rest = [get().hostKeyPrompt, ...get().hostKeyQueue]
+        .filter((p): p is HostKeyPrompt => !!p && p.runtimeId !== runtimeId);
+      set({ hostKeyPrompt: rest[0] ?? null, hostKeyQueue: rest.slice(1) });
+    }
+    try {
+      await driver.disconnect(runtimeId);
+    } catch {
+      // 后端会话可能已经不存在（例如程序重启后），关闭流程不能被它卡住
+    }
     terminalRegistry.get(runtimeId)?.dispose();
     terminalRegistry.delete(runtimeId);
     monitorRegistry.get(runtimeId)?.dispose();
@@ -358,6 +552,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         : state.activeId;
       return { workspaces, activeId, focusedPane, panes };
     });
+    // closed 事件的 IPC 送达可能晚于这里，标记多留几秒再清理，避免迟到事件又触发重连提示
+    window.setTimeout(() => closingSessions.delete(runtimeId), 5000);
   },
 
   focusWorkspace: (runtimeId) => set((state) => {
@@ -690,6 +886,35 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   showToast: (message, kind = "info") => set({ toast: { id: Date.now(), message, kind } }),
   clearToast: () => set({ toast: null }),
+
+  confirmHostKey: () => {
+    const prompt = get().hostKeyPrompt;
+    if (!prompt) return;
+    pendingHostKey.delete(prompt.runtimeId);
+    // 先推进队列：即使下面重新建连失败，也不会把后面的待确认主机堵住
+    advanceHostKeyPrompt(get, set);
+    const ws = get().workspaces.find((w) => w.runtimeId === prompt.runtimeId);
+    // 工作区可能已被关掉：那就只关弹窗，不再建连
+    if (!ws) return;
+    startSession(ws.session, prompt.runtimeId, get, set, {
+      trustNewHostKey: prompt.kind === "new",
+      trustChangedHostKey: prompt.kind === "changed",
+    });
+  },
+  dismissHostKey: () => {
+    const prompt = get().hostKeyPrompt;
+    if (prompt) {
+      pendingHostKey.delete(prompt.runtimeId);
+      // 弹窗关掉后状态若还写着"等待确认主机指纹"，用户会以为仍在等：
+      // 改成明确的"未连接"，并告诉他点标签就能重试
+      get().setStatus(
+        prompt.runtimeId,
+        "error",
+        prompt.kind === "changed" ? "未连接：主机指纹变化未确认，点击该会话可重试" : "未连接：未确认主机指纹，点击该会话可重试",
+      );
+    }
+    advanceHostKeyPrompt(get, set);
+  },
 }));
 
 // store 已就绪：注册迁移期的失败提示钩子。secretSet 是异步的，回调可能在此之后才触发，
@@ -703,3 +928,21 @@ flushMigrationErrors = () => {
   );
 };
 flushMigrationErrors();
+
+/**
+ * 退出程序前主动断开所有会话。
+ *
+ * 之前直接 destroy 窗口，后端会话随进程一起被丢弃：服务器侧要等到 TCP 超时
+ * 才能回收，且断开瞬间前端还会收到 closed 事件、闪一条"正在重新连接"。
+ * 现在先置退出标记（屏蔽所有重连提示），再逐个走正常 SSH 断开。
+ * 最多等 1.2 秒，网络卡住也不能让窗口关不掉。
+ */
+export async function shutdownAllSessions(): Promise<void> {
+  appShuttingDown = true;
+  const ids = useAppStore.getState().workspaces.map((w) => w.runtimeId);
+  if (!ids.length) return;
+  await Promise.race([
+    Promise.allSettled(ids.map((id) => driver.disconnect(id))),
+    new Promise<void>((resolve) => window.setTimeout(resolve, 1200)),
+  ]);
+}

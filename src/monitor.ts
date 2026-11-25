@@ -52,6 +52,8 @@ export function mockSnapshot(sessionId: string): MonitorSnapshot {
     cpuCores,
     memUsed, memTotal, memApp, memCache, swapUsed, swapTotal,
     filesystems,
+    // 浏览器演示模式无真实 GPU，不显示假 GPU 数据（桌面端走后端 nvidia-smi 真实采集）
+    gpu: null,
     diskRead: Math.round(Math.random() * 60),
     diskWrite: Math.round(Math.random() * 40),
     netIn, netOut,

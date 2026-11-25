@@ -19,9 +19,12 @@ export interface SessionConfig {
   privateKeyPath?: string;
   /** 仅连接时临时传给后端：凭据库中对应的原始连接 id（标签运行时 id 不带这个字段落盘） */
   secretId?: string;
+  /** 仅连接时临时传给后端：用户已确认信任该主机的首个主机密钥 */
+  trustNewHostKey?: boolean;
+  /** 仅连接时临时传给后端：用户已确认「该主机指纹变了，替换旧记录」 */
+  trustChangedHostKey?: boolean;
   protocol?: TransferProtocol;
-  env?: Record<string, string>;
-  note?: string;
+  /** 侧栏 / 标签页的圆点颜色，用来区分不同环境或用途 */
   color?: string;
   createdAt: number;
 }
@@ -86,8 +89,6 @@ export const DEFAULT_EDITOR_SHORTCUTS: Record<EditorShortcutId, string> = {
 
 /** 鼠标与快捷键偏好 */
 export interface Preferences {
-  /** 文件列表左键行为 */
-  leftClick: "open" | "select";
   /** 文件列表右键行为 */
   rightClick: "menu" | "copyPath";
   /** 终端右键直接粘贴 */
@@ -96,18 +97,20 @@ export interface Preferences {
   terminalAutoReconnect: boolean;
   /** 选中终端文本自动复制 */
   terminalCopyOnSelect: boolean;
-  /** 终端连接提示符 */
-  terminalPrompt: boolean;
   /** 终端响铃 */
   terminalBell: boolean;
   /** 鼠标中键行为 */
   terminalMiddleClick: "none" | "paste";
   /** 拦截 Ctrl+V 从剪贴板粘贴 */
   terminalCtrlVPaste: boolean;
+  /** 终端 cd 切换目录时，文件面板远端目录跟随跳转 */
+  terminalFollowCd: boolean;
   /** 最大缓存行数 */
   terminalScrollback: number;
-  /** 清屏时保留屏幕内容 */
-  terminalKeepOnClear: boolean;
+  /** 终端字体 font-family（空串=内置等宽字体栈） */
+  terminalFont: string;
+  /** 终端字号 px */
+  terminalFontSize: number;
   /** 编辑器字号 */
   editorFontSize: number;
   /** 编辑器 Tab 缩进空格数 */
@@ -116,12 +119,6 @@ export interface Preferences {
   editorWordWrap: boolean;
   /** 编辑器内快捷键（可在设置里逐项修改） */
   editorShortcuts: Record<EditorShortcutId, string>;
-  /** 复制 */
-  copy: string;
-  /** 粘贴 */
-  paste: string;
-  /** 复制路径 */
-  copyPath: string;
   /** 搜索命令 */
   search: string;
   /** 新建连接 */
@@ -132,12 +129,6 @@ export interface Preferences {
   closeAction: "ask" | "quit" | "tray";
   /** 最多可分屏的窗格数量 */
   maxPanes: 2 | 3 | 4;
-  /** 侧栏分隔条的配色浓度：以主题强调色混入面板色的比例（0-100） */
-  railTint: number;
-  /** 侧栏分隔条宽度（px） */
-  railWidth: 4 | 6 | 8 | 10;
-  /** 分隔条上是否显示折叠箭头 */
-  railChevron: boolean;
   /** 是否显示顶栏品牌文字（关闭即隐藏字样） */
   brandVisible: boolean;
   /** 品牌文字内容 */
@@ -155,32 +146,26 @@ export interface Preferences {
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
-  leftClick: "select",
   rightClick: "menu",
   terminalRightPaste: true,
-  terminalAutoReconnect: false,
+  terminalAutoReconnect: true,
   terminalCopyOnSelect: false,
-  terminalPrompt: true,
   terminalBell: false,
   terminalMiddleClick: "none",
   terminalCtrlVPaste: true,
+  terminalFollowCd: true,
   terminalScrollback: 3000,
-  terminalKeepOnClear: true,
+  terminalFont: "",
+  terminalFontSize: 12.5,
   editorFontSize: 12,
   editorTabSize: 2,
   editorWordWrap: true,
   editorShortcuts: { ...DEFAULT_EDITOR_SHORTCUTS },
-  copy: "Ctrl+C",
-  paste: "Ctrl+V",
-  copyPath: "Ctrl+Shift+C",
   search: "Ctrl+K",
   newConnection: "Ctrl+N",
   closeTab: "Ctrl+W",
   closeAction: "ask",
   maxPanes: 4,
-  railTint: 20,
-  railWidth: 6,
-  railChevron: true,
   brandVisible: true,
   brandText: "MSSH",
   brandFont: "",
@@ -255,6 +240,16 @@ export interface FilesystemEntry {
   total: number;
 }
 
+/** 真实 GPU 信息（后端 nvidia-smi 采集）；采集不到时为 null */
+export interface GpuInfo {
+  name: string;
+  utilization: number;
+  memUsed: number;
+  memTotal: number;
+  temperature: number | null;
+  power: number | null;
+}
+
 export interface MonitorSnapshot {
   sessionId: string;
   uptime: string;
@@ -268,6 +263,7 @@ export interface MonitorSnapshot {
   swapUsed: number;
   swapTotal: number;
   filesystems: FilesystemEntry[];
+  gpu: GpuInfo | null;
   diskRead: number;
   diskWrite: number;
   netIn: number;
@@ -284,17 +280,23 @@ export interface SshEventHandlers {
   onData: (sessionId: string, data: string) => void;
   onStatus: (sessionId: string, status: ConnectionStatus, message?: string) => void;
   onClosed: (sessionId: string) => void;
+  /** 写入失败（会话已失效）：后端拒绝写入时触发，界面据此提示并自动重连 */
+  onWriteError?: (sessionId: string, error: string) => void;
 }
 
 /** 驱动适配层统一接口：Mock 与 Tauri 实现同一契约。 */
 export interface Driver {
   readonly kind: "mock" | "tauri";
   connect(config: SessionConfig, handlers: SshEventHandlers): Promise<void>;
+  /** 真实测试连接：建连 + 认证后立即断开，返回可读结果 */
+  testConnection(config: SessionConfig): Promise<string>;
   write(sessionId: string, data: string): void;
   resize(sessionId: string, cols: number, rows: number): void;
   disconnect(sessionId: string): Promise<void>;
 
   // ===== SFTP 文件传输 =====
+  /** 把远端路径解析为服务器真实绝对路径（不存在会报错） */
+  sftpCanonicalize(sessionId: string, path: string): Promise<string>;
   sftpList(sessionId: string, path: string): Promise<RemoteFileEntry[]>;
   sftpRead(sessionId: string, path: string): Promise<FileContent>;
   /** data 为原始字节的 base64 编码（用 btoa/atob 处理） */
@@ -305,6 +307,8 @@ export interface Driver {
 
   // ===== 本地文件系统 =====
   fsHome(): Promise<string>;
+  /** 当前用户桌面目录（本地文件面板默认落点，动态解析而非硬编码） */
+  fsDesktop(): Promise<string>;
   fsList(path: string): Promise<RemoteFileEntry[]>;
   fsRead(path: string): Promise<FileContent>;
   fsWrite(path: string, data: string): Promise<number>;

@@ -59,11 +59,15 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main_window(app);
         }))
+        // 剪贴板走原生 IPC，不再用 navigator.clipboard（会触发 WebView2 权限弹窗）
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             commands::ssh_connect,
+            commands::ssh_test,
             commands::ssh_write,
             commands::ssh_resize,
             commands::ssh_disconnect,
+            commands::sftp_canonicalize,
             commands::sftp_list,
             commands::sftp_read,
             commands::sftp_write,
@@ -72,6 +76,7 @@ pub fn run() {
             commands::sftp_create,
             commands::monitor_collect,
             commands::fs_home,
+            commands::fs_desktop,
             commands::fs_list,
             commands::fs_read,
             commands::fs_write,
@@ -112,7 +117,15 @@ pub fn run() {
                             let _ = win.hide();
                         }
                     }
-                    "quit" => app.exit(0),
+                    // 托盘退出：先发标准 SSH disconnect 再退出进程，
+                    // 否则服务器侧要等 TCP 超时才回收连接
+                    "quit" => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            crate::ssh::disconnect_all().await;
+                            app.exit(0);
+                        });
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| match event {

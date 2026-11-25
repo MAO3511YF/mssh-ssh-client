@@ -138,6 +138,16 @@ pub fn home() -> String {
     display_path(&dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
 }
 
+/// 当前用户的桌面目录（本地文件面板默认落点）。
+/// dirs::desktop_dir() 会读取系统已知文件夹，能正确处理桌面被改到非系统盘、
+/// 以及 OneDrive 重定向等情况；取不到时退回家目录，绝不硬编码 C:\...\Desktop。
+pub fn desktop() -> String {
+    let p = dirs::desktop_dir()
+        .or_else(|| dirs::home_dir())
+        .unwrap_or_else(|| PathBuf::from("/"));
+    display_path(&p)
+}
+
 /// 列出本地目录
 pub fn list(path: &str) -> Result<Vec<RemoteFileEntry>> {
     let p = expand(path);

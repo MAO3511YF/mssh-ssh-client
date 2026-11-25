@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Eye, EyeOff, Save, PlugZap, X } from "lucide-react";
 import { useAppStore } from "../store";
 import { driver } from "../drivers";
-import { AUTH_METHODS, COLOR_LABELS, ENV_OPTIONS } from "../constants";
+import { AUTH_METHODS, COLOR_LABELS } from "../constants";
 import type { AuthType, SessionConfig } from "../types";
 import { useModal } from "../useModal";
 
@@ -43,10 +43,9 @@ export function SessionDialog({ editing, onClose }: Props) {
   const [password, setPassword] = useState(editing?.password ?? "");
   const [keyPath, setKeyPath] = useState(editing?.privateKeyPath ?? "");
   const [color, setColor] = useState(editing?.color ?? "#3b6ef5");
-  const [env, setEnv] = useState(editing?.env?.stage ?? "开发环境");
-  const [note, setNote] = useState(editing?.note ?? "");
   const [showPwd, setShowPwd] = useState(false);
   const [hasSavedPassword, setHasSavedPassword] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   // 只问后端"有没有存过密码"，不把明文取回前端
@@ -79,7 +78,7 @@ export function SessionDialog({ editing, onClose }: Props) {
     authMethod: auth,
     password: auth === "password" ? password : undefined,
     privateKeyPath: auth === "privateKey" ? keyPath : undefined,
-    color, note, env: { stage: env }, createdAt: editing?.createdAt ?? Date.now(),
+    color, createdAt: editing?.createdAt ?? Date.now(),
   });
 
   const save = () => {
@@ -97,9 +96,28 @@ export function SessionDialog({ editing, onClose }: Props) {
     onClose();
   };
 
-  const test = () => {
+  const test = async () => {
     if (!host.trim()) { showToast("请先填写主机地址", "error"); return; }
-    showToast("测试连接成功（演示）", "success");
+    if (!/^\d+$/.test(port) || +port < 1 || +port > 65535) { showToast("端口无效", "error"); return; }
+    if (testing) return;
+    setTesting(true);
+    try {
+      // 测试用表单当前值；编辑已保存连接且密码留空时，后端会从凭据库取回（带绑定校验）
+      const cfg: SessionConfig = {
+        ...build(),
+        // build() 要求名称/工作区，但测试连接只需要地址与认证信息，这里放宽
+        name: name.trim() || "测试连接",
+        directory: directory.trim() || "测试",
+        id: editing?.id ?? `test-${Date.now()}`,
+        secretId: editing?.id,
+      };
+      const message = await driver.testConnection(cfg);
+      showToast(message, "success");
+    } catch (e) {
+      showToast(`测试连接失败：${String(e)}`, "error");
+    } finally {
+      setTesting(false);
+    }
   };
 
   const clearSavedPassword = () => {
@@ -115,7 +133,7 @@ export function SessionDialog({ editing, onClose }: Props) {
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="session-title" ref={dialogRef}>
         <div className="modal-head">
           <div>
-            <h2 id="session-title">{editing ? "Edit Connection" : "New Connection"}</h2>
+            <h2 id="session-title">{editing ? "编辑连接" : "新建连接"}</h2>
           </div>
           <button className="icon-btn" aria-label="关闭" onClick={onClose}><X size={18} /></button>
         </div>
@@ -194,31 +212,20 @@ export function SessionDialog({ editing, onClose }: Props) {
               </label>
             )}
 
-            <label className="field">
-              <span>环境</span>
-              <select value={env} onChange={(e) => setEnv(e.target.value)}>
-                {ENV_OPTIONS.map((o) => <option key={o}>{o}</option>)}
-              </select>
-            </label>
-
-            <div className="field">
+            <div className="field wide">
               <span>标记颜色</span>
               <div className="color-row">
                 {COLOR_LABELS.map((c) => (
                   <button key={c.value} title={c.label} className={`color-dot ${color === c.value ? "on" : ""}`} style={{ background: c.value }} onClick={() => setColor(c.value)} />
                 ))}
               </div>
+              <small className="hint">显示在侧栏和标签页的圆点上，用来区分不同服务器。</small>
             </div>
-
-            <label className="field wide">
-              <span>备注</span>
-              <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="可选备注信息" />
-            </label>
           </div>
         </div>
 
         <div className="modal-foot">
-          <button className="btn ghost" onClick={test}><PlugZap size={15} /> 测试连接</button>
+          <button className="btn ghost" onClick={() => void test()} disabled={testing}><PlugZap size={15} /> {testing ? "测试中…" : "测试连接"}</button>
           <span className="spacer" />
           <button className="btn secondary" onClick={onClose}>取消</button>
           <button className="btn secondary" onClick={save}><Save size={15} /> 保存</button>

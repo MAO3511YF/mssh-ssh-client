@@ -20,8 +20,6 @@ export const AUTH_METHODS: { value: AuthType; label: string }[] = [
   { value: "none", label: "不验证" },
 ];
 
-export const ENV_OPTIONS = ["生产环境", "测试环境", "开发环境", "本地环境"];
-
 export const COLOR_LABELS: { value: string; label: string }[] = [
   { value: "#4f7cff", label: "蓝" },
   { value: "#22a06b", label: "绿" },
@@ -48,6 +46,16 @@ export const BRAND_FONTS: { value: string; label: string }[] = [
   { value: "'YouYuan', '幼圆', 'Microsoft YaHei', sans-serif", label: "幼圆 · 圆润" },
   { value: "'LiSu', '隶书', 'STLiti', serif", label: "隶书 · 古朴" },
 ];
+
+/**
+ * 终端字体不再写死一份预设列表：终端是字符网格排版，只有等宽字体才是正解，
+ * 而预设里没装的字体选中后只会静默回退（用户看到的就是「选了没反应」）。
+ * 现在由 src/fonts.ts 现场探测系统里真实安装的等宽字体，只列能生效的那些。
+ */
+
+/** 终端默认字体栈（preferences.terminalFont 为空时使用，与 xterm 初始化保持一致） */
+export const TERMINAL_FONT_STACK =
+  "'SF Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace";
 
 export const DEFAULT_COMMANDS: SavedCommand[] = [
   { id: "c1", name: "查看磁盘占用", command: "df -h", group: "系统", description: "显示各分区磁盘使用情况" },

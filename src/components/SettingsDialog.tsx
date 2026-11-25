@@ -5,7 +5,8 @@ import {
   removeSavedTheme, resetToPreset, saveTheme, themes, type ThemePreset,
 } from "../theme";
 import { useAppStore } from "../store";
-import { BRAND_FONTS } from "../constants";
+import { BRAND_FONTS, TERMINAL_FONT_STACK } from "../constants";
+import { installedTerminalFonts, primaryFamily, resolveDefaultFamily } from "../fonts";
 import { DEFAULT_EDITOR_SHORTCUTS, DEFAULT_PREFERENCES, EDITOR_SHORTCUTS, type Preferences } from "../types";
 import { useModal } from "../useModal";
 
@@ -55,7 +56,14 @@ function ToggleRow({ label, desc, value, onChange }: {
   return (
     <div className="pref-row">
       <div className="pref-info"><b>{label}</b>{desc && <span>{desc}</span>}</div>
-      <button className={`switch ${value ? "on" : ""}`} onClick={() => onChange(!value)}><i /></button>
+      <button
+        className={`switch ${value ? "on" : ""}`}
+        role="switch"
+        aria-checked={value}
+        aria-label={label}
+        title={`${label}：${value ? "已开启，点击关闭" : "已关闭，点击开启"}`}
+        onClick={() => onChange(!value)}
+      ><i /></button>
     </div>
   );
 }
@@ -145,6 +153,16 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
     setThemeList(allThemes());
   };
   const setPref = <K extends keyof Preferences>(key: K, value: Preferences[K]) => setPreference(key, value);
+
+  // 现场探测本机真实可用的等宽字体：没装的字体不进下拉，避免「选了没反应」的假选项
+  const fontOptions = useMemo(() => installedTerminalFonts(), []);
+  const defaultFamily = useMemo(() => resolveDefaultFamily(), []);
+  const currentFont = preferences.terminalFont;
+  const fontSelectValue = currentFont === ""
+    ? ""
+    : fontOptions.some((f) => f.value === currentFont)
+      ? currentFont
+      : "__custom";
 
   return (
     <div className="modal-overlay" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -243,6 +261,72 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
                 </section>
 
                 <section className="theme-section">
+                  <h3 className="theme-section-title">终端文字</h3>
+                  {/* 预览用终端自己的深色底，所见即所得；改完立刻同步到所有已打开的终端 */}
+                  <div className="term-preview">
+                    <span
+                      className="term-preview-line"
+                      style={{
+                        fontFamily: preferences.terminalFont || TERMINAL_FONT_STACK,
+                        fontSize: `${preferences.terminalFontSize || 12.5}px`,
+                      }}
+                    >
+                      <i>ubuntu@web-01</i>:<b>~</b>$ ls -lh /var/log
+                    </span>
+                  </div>
+                  <div className="pref-row">
+                    <div className="pref-info">
+                      <b>字体</b>
+                      <span>
+                        {fontOptions.length > 0
+                          ? `已检测到 ${fontOptions.length} 款本机可用的等宽字体，未安装的不会列出`
+                          : "无法检测本机字体，请在下方手动填写 font-family"}
+                      </span>
+                    </div>
+                    <select
+                      className="pref-select"
+                      value={fontSelectValue}
+                      onChange={(e) => {
+                        // "__custom" 只是「当前值不在列表里」的占位，选中它不改变设置
+                        if (e.target.value === "__custom") return;
+                        setPref("terminalFont", e.target.value);
+                      }}
+                    >
+                      <option value="">等宽默认（{defaultFamily ?? "系统等宽"}）</option>
+                      {fontOptions.map((f) => (
+                        <option key={f.family} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
+                      ))}
+                      {fontSelectValue === "__custom" && (
+                        <option value="__custom">
+                          {currentFont ? `${primaryFamily(currentFont)}（未安装，已回退）` : "自定义"}
+                        </option>
+                      )}
+                    </select>
+                  </div>
+                  <div className="pref-row">
+                    <div className="pref-info"><b>自定义字体</b><span>直接填 font-family；系统没装的字体会被浏览器的兜底字体替换</span></div>
+                    <input
+                      className="pref-text"
+                      value={preferences.terminalFont}
+                      placeholder={TERMINAL_FONT_STACK}
+                      onChange={(e) => setPref("terminalFont", e.target.value)}
+                    />
+                  </div>
+                  <div className="pref-row">
+                    <div className="pref-info"><b>字号</b><span>单位 px，改完终端会自动重排行列</span></div>
+                    <input
+                      className="pref-number" type="number" min={9} max={28} step={0.5}
+                      value={preferences.terminalFontSize}
+                      onChange={(e) => setPref("terminalFontSize", Math.max(9, Math.min(28, Number(e.target.value) || 12.5)))}
+                    />
+                  </div>
+                  <button className="btn tiny pref-reset" onClick={() => {
+                    setPref("terminalFont", DEFAULT_PREFERENCES.terminalFont);
+                    setPref("terminalFontSize", DEFAULT_PREFERENCES.terminalFontSize);
+                  }}><RotateCcw size={13} /> 恢复默认</button>
+                </section>
+
+                <section className="theme-section">
                   <div className="theme-section-head">
                     <h3 className="theme-section-title">品牌文字</h3>
                     <ToggleRow
@@ -314,8 +398,13 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
                         value={/^#[0-9a-fA-F]{6}$/.test(preferences.brandColor) ? preferences.brandColor : "#c2185b"}
                         disabled={!preferences.brandColor}
                         onChange={(e) => setPref("brandColor", e.target.value)} />
-                      <button className={`switch ${preferences.brandColor ? "on" : ""}`} title="跟随主题色"
-                        onClick={() => setPref("brandColor", preferences.brandColor ? "" : "#c2185b")}><i /></button>
+                      <button
+                        className={`switch ${preferences.brandColor ? "on" : ""}`}
+                        role="switch"
+                        aria-checked={Boolean(preferences.brandColor)}
+                        title="跟随主题色"
+                        onClick={() => setPref("brandColor", preferences.brandColor ? "" : "#c2185b")}
+                      ><i /></button>
                     </div>
                   </div>
                   <button className="btn tiny pref-reset" onClick={() => {
@@ -353,27 +442,26 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
                 <section className="pref-section">
                   <h3 className="theme-section-title">鼠标</h3>
                   <div className="pref-row">
-                    <div className="pref-info"><b>文件列表左键</b><span>单击文件时的行为</span></div>
-                    <Choice value={preferences.leftClick} options={[{ v: "select", label: "选中" }, { v: "open", label: "打开" }]} onChange={(v) => setPref("leftClick", v)} />
-                  </div>
-                  <div className="pref-row">
                     <div className="pref-info"><b>文件列表右键</b><span>右键单击文件时的行为</span></div>
                     <Choice value={preferences.rightClick} options={[{ v: "menu", label: "更多操作" }, { v: "copyPath", label: "复制路径" }]} onChange={(v) => setPref("rightClick", v)} />
                   </div>
                   <div className="pref-row">
                     <div className="pref-info"><b>终端右键粘贴</b><span>在终端内右键直接粘贴剪贴板内容</span></div>
-                    <button className={`switch ${preferences.terminalRightPaste ? "on" : ""}`} onClick={() => setPref("terminalRightPaste", !preferences.terminalRightPaste)}><i /></button>
+                    <button
+                      className={`switch ${preferences.terminalRightPaste ? "on" : ""}`}
+                      role="switch"
+                      aria-checked={preferences.terminalRightPaste}
+                      aria-label="终端右键粘贴"
+                      onClick={() => setPref("terminalRightPaste", !preferences.terminalRightPaste)}
+                    ><i /></button>
                   </div>
                 </section>
 
                 <section className="pref-section">
                   <h3 className="theme-section-title">快捷键</h3>
-                  <div className="pref-row"><div className="pref-info"><b>复制</b></div><KeyCap value={preferences.copy} onChange={(v) => setPref("copy", v)} /></div>
-                  <div className="pref-row"><div className="pref-info"><b>粘贴</b></div><KeyCap value={preferences.paste} onChange={(v) => setPref("paste", v)} /></div>
-                  <div className="pref-row"><div className="pref-info"><b>复制路径</b></div><KeyCap value={preferences.copyPath} onChange={(v) => setPref("copyPath", v)} /></div>
-                  <div className="pref-row"><div className="pref-info"><b>搜索命令</b></div><KeyCap value={preferences.search} onChange={(v) => setPref("search", v)} /></div>
-                  <div className="pref-row"><div className="pref-info"><b>新建连接</b></div><KeyCap value={preferences.newConnection} onChange={(v) => setPref("newConnection", v)} /></div>
-                  <div className="pref-row"><div className="pref-info"><b>关闭标签</b></div><KeyCap value={preferences.closeTab} onChange={(v) => setPref("closeTab", v)} /></div>
+                  <div className="pref-row"><div className="pref-info"><b>搜索命令</b><span>打开工作台的命令仓库并聚焦搜索框</span></div><KeyCap value={preferences.search} onChange={(v) => setPref("search", v)} /></div>
+                  <div className="pref-row"><div className="pref-info"><b>新建连接</b><span>任何界面下都生效</span></div><KeyCap value={preferences.newConnection} onChange={(v) => setPref("newConnection", v)} /></div>
+                  <div className="pref-row"><div className="pref-info"><b>关闭标签</b><span>焦点在终端内时不拦截，避免占用 shell 的按键</span></div><KeyCap value={preferences.closeTab} onChange={(v) => setPref("closeTab", v)} /></div>
                   <button className="btn tiny pref-reset" onClick={() => { for (const k of Object.keys(DEFAULT_PREFERENCES) as (keyof Preferences)[]) setPref(k, DEFAULT_PREFERENCES[k] as never); }}><RotateCcw size={13} /> 恢复默认</button>
                 </section>
               </div>
@@ -386,7 +474,6 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
                   <div className="settings-grid">
                     <ToggleRow label="连接断开自动重连" value={preferences.terminalAutoReconnect} onChange={(v) => setPref("terminalAutoReconnect", v)} />
                     <ToggleRow label="鼠标选中自动复制" value={preferences.terminalCopyOnSelect} onChange={(v) => setPref("terminalCopyOnSelect", v)} />
-                    <ToggleRow label="终端命令提示" value={preferences.terminalPrompt} onChange={(v) => setPref("terminalPrompt", v)} />
                     <ToggleRow label="终端声音" value={preferences.terminalBell} onChange={(v) => setPref("terminalBell", v)} />
                     <div className="pref-row">
                       <div className="pref-info"><b>鼠标中键执行</b></div>
@@ -394,7 +481,12 @@ export function SettingsDialog({ onClose, currentId, onApply }: Props) {
                     </div>
                     <ToggleRow label="鼠标右键粘贴" value={preferences.terminalRightPaste} onChange={(v) => setPref("terminalRightPaste", v)} />
                     <ToggleRow label="Ctrl+V 粘贴拦截" value={preferences.terminalCtrlVPaste} onChange={(v) => setPref("terminalCtrlVPaste", v)} />
-                    <ToggleRow label="清屏时保留屏幕内容" value={preferences.terminalKeepOnClear} onChange={(v) => setPref("terminalKeepOnClear", v)} />
+                    <ToggleRow
+                      label="cd 跟随跳转"
+                      desc="在终端 cd 到某目录时，文件面板的远程目录同步跳转过去"
+                      value={preferences.terminalFollowCd}
+                      onChange={(v) => setPref("terminalFollowCd", v)}
+                    />
                     <NumberRow label="最大缓存行数" value={preferences.terminalScrollback} min={100} max={20000} onChange={(v) => setPref("terminalScrollback", v)} />
                   </div>
                   <div className="pref-row">

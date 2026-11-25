@@ -213,6 +213,10 @@ async fn sftp_list_over_real_channel() {
     assert!(names.contains(&"beta_dir"), "应列出 beta_dir，实际: {:?}", names);
     assert!(entries.iter().all(|e| !e.path.is_empty()), "每个条目都应有完整路径");
 
+    // canonicalize 应返回服务器的真实绝对路径（测试服务器 realpath 返回 "/"）
+    let real = sftp::canonicalize("sftp-e2e", ".").await.expect("canonicalize 应成功");
+    assert_eq!(real, "/", "canonicalize 应返回服务器真实绝对路径");
+
     let dyn_sink: Arc<dyn EventSink> = sink.clone();
     ssh::disconnect(&dyn_sink, "sftp-e2e").await.unwrap();
     shutdown.shutdown("done".into());
