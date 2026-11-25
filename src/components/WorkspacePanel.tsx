@@ -39,8 +39,10 @@ export function WorkspacePanel({ workspace, active }: Props) {
       {filesOpen && (
         <>
           {/* 展开态：这条切换条同时是可拖拽的分隔条，文件面板紧贴其下，中间无空白。
-              不画贯穿整宽的强调线——那会像一道横贯终端的彩色裂缝，只在按钮上给反馈。 */}
-          <PanelResizeHandle className="resize-handle horizontal files-handle files-toggle-bar">
+              不画贯穿整宽的强调线——那会像一道横贯终端的彩色裂缝，只在按钮上给反馈。
+              hitArea 不做外扩：这一条本身有 26px 高，够抓了，再外扩会让终端的最后一行也变成
+              上下调高度的光标。 */}
+          <PanelResizeHandle className="resize-handle horizontal files-handle files-toggle-bar" hitAreaMargins={{ fine: 0, coarse: 8 }}>
             <button
               className="files-grip"
               onPointerDown={(e) => e.stopPropagation()}

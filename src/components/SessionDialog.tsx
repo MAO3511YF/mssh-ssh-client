@@ -133,7 +133,7 @@ export function SessionDialog({ editing, onClose }: Props) {
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="session-title" ref={dialogRef}>
         <div className="modal-head">
           <div>
-            <h2 id="session-title">{editing ? "编辑连接" : "新建连接"}</h2>
+            <h2 id="session-title">{editing ? "Edit Connection" : "New Connection"}</h2>
           </div>
           <button className="icon-btn" aria-label="关闭" onClick={onClose}><X size={18} /></button>
         </div>

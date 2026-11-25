@@ -42,6 +42,9 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<Menu | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  // 记录上一次单击时该连接是否已经开着：双击时用它区分「首次打开」和「再开一个」，
+  // 否则双击会先被单击建出一个窗口，再被 dblclick 建出第二个。
+  const clickRef = useRef<{ id: string; wasOpen: boolean } | null>(null);
 
   const groups = useMemo<DirectoryGroup[]>(() => {
     const names = new Set<string>(folders);
@@ -112,7 +115,7 @@ export function Sidebar({
       <div className="side-section">
         <button className="side-new" onClick={onNew}>
           <Plus size={16} />
-          <span>新建连接</span>
+          <span>New Connection</span>
         </button>
       </div>
 
@@ -189,7 +192,15 @@ export function Sidebar({
                     <div className="dir-row" key={s.id}>
                       <button
                         className={`session-item ${activeSessionId === s.id ? "active" : ""}`}
-                        onClick={() => openWorkspace(s)}
+                        title="单击打开，双击再开一个终端"
+                        onClick={() => {
+                          clickRef.current = { id: s.id, wasOpen: workspaces.some((w) => w.session.id === s.id) };
+                          openWorkspace(s);
+                        }}
+                        onDoubleClick={() => {
+                          const prev = clickRef.current;
+                          if (prev && prev.id === s.id && prev.wasOpen) openWorkspace(s, { newSession: true });
+                        }}
                         onContextMenu={(e) => openSessionMenu(s.id, e)}
                       >
                         <span className="session-color" style={{ background: s.color ?? "var(--accent)" }} />

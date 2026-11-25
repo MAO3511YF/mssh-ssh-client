@@ -451,7 +451,12 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .tf-refresh:hover { opacity: 1; }
 .tf-split { flex: 1; min-height: 0; width: 100%; }
 .tf-col-panel { display: flex; min-width: 0; min-height: 0; }
-.tf-col-resize { background: var(--line-soft); }
+/* 文件面板的列分隔：槽宽 6px，但视觉上只是一条居中的 1px 细线——先让人看见「这里可以分栏」，
+   再把拖动命中区收到线附近，不会出现「鼠标还没到线就变成列宽光标」的困惑 */
+.resize-handle.vertical.tf-col-resize { width: 6px; background: transparent; }
+.tf-col-resize .resize-line { inset: 0 2.5px; background: var(--line); transition: background .14s ease; }
+.tf-col-resize:hover, .tf-col-resize[data-resize-handle-active] { background: transparent; }
+.tf-col-resize:hover .resize-line, .tf-col-resize[data-resize-handle-active] .resize-line { background: var(--accent); }
 .tf-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .tf-col-head { height: 32px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 var(--sp-2); background: var(--line-soft); border-bottom: 1px solid var(--line-soft); }
 .tf-col-head .tf-path-copy { flex: 1; min-width: 0; }
@@ -775,9 +780,12 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .editor-placeholder svg { opacity: .35; }
 .editor-placeholder p { margin: 0; color: var(--text-2); font-size: var(--text-sm); }
 .editor-meta { height: 48px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--line); }
-.editor-name { width: 200px; font-family: var(--font-mono); font-size: var(--text-sm); }
+/* 文件名与语言并排：同高同圆角，名字占主要宽度、语言收窄，避免一个胖一个瘦 */
+.editor-meta > input, .editor-meta > select { height: 30px; padding: 0 10px; font-size: var(--text-sm); }
+.editor-name { flex: 0 1 300px; width: 300px; min-width: 140px; font-family: var(--font-mono); }
+.editor-meta > select { flex: none; width: 124px; padding: 0 8px; }
 /* 远程文件的语言只读展示：文件名在服务器上，改语言没有落点，索性不给下拉 */
-.editor-lang-static { flex: none; height: 28px; padding: 0 10px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--line-soft); color: var(--text-2); font-size: var(--text-xs); }
+.editor-lang-static { flex: none; height: 30px; padding: 0 10px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--line-soft); color: var(--text-2); font-size: var(--text-xs); }
 .editor-code { flex: 1; min-height: 0; margin: 0; padding: 14px 16px; border: none; border-radius: 0; resize: none; background: var(--card); color: var(--text); font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; tab-size: 2; }
 .editor-code:focus { box-shadow: none; }
 .editor-status { height: 26px; flex: none; display: flex; align-items: center; gap: 16px; padding: 0 14px; border-top: 1px solid var(--line); background: var(--line-soft); color: var(--muted); font-size: var(--text-xs); }

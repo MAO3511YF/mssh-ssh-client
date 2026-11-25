@@ -558,7 +558,10 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
         <Panel defaultSize={50} minSize={22} className="tf-col-panel">
           {renderColumn("local")}
         </Panel>
-        <PanelResizeHandle className="resize-handle vertical tf-col-resize"><div className="resize-line" /></PanelResizeHandle>
+        {/* 命中区不外扩：分隔槽本身 6px，光标进入槽内才变成列宽箭头，和看到的那条线对齐 */}
+        <PanelResizeHandle className="resize-handle vertical tf-col-resize" hitAreaMargins={{ fine: 0, coarse: 8 }}>
+          <div className="resize-line" />
+        </PanelResizeHandle>
         <Panel defaultSize={50} minSize={22} className="tf-col-panel">
           {renderColumn("remote")}
         </Panel>
