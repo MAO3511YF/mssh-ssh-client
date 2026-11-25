@@ -451,16 +451,17 @@ export function FileTransferPanel({ host, protocol, runtimeId }: Props) {
 
   const renderRows = (side: "local" | "remote") => {
     const cwd = cwdOf(side);
-    // 后端 sftp/read_dir 会过滤掉 . 与 ..，这里补一行显式的上级目录入口，
-    // 单击即可回到上一级（本地也一样），避免用户只能靠那个小返回箭头。
+    // 后端 sftp/read_dir 会过滤掉 . 与 ..，这里补一行显式的上级目录入口。
+    // 与普通目录行保持一致：单击只选中，双击才返回上级——避免误点时整列跳走。
     const parent = parentPath(cwd);
     const showParent = side === "local" ? cwd !== "~" : cwd !== "." && cwd !== "/" && cwd !== "~";
     const upRow = showParent ? (
       <button
         key={`${side}-up`}
         className="tf-row tf-up-row"
-        onClick={() => goUp(side)}
-        title={`返回上级目录: ${parent}`}
+        onClick={() => setSelected(null)}
+        onDoubleClick={() => goUp(side)}
+        title={`双击返回上级目录: ${parent}`}
       >
         <Folder size={15} className="tf-ico dir" />
         <span className="tf-name">..</span>

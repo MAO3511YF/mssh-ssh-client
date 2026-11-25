@@ -1,6 +1,6 @@
 [package]
 name = "mssh"
-version = "1.0.10"
+version = "1.0.11"
 description = "MSSH - 现代化 SSH 客户端"
 authors = ["MSSH"]
 license = "MIT"

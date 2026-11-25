@@ -408,6 +408,10 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .resize-handle.horizontal.files-handle { height: 26px; background: var(--term-bg); }
 .resize-handle.horizontal.files-handle:hover,
 .resize-handle.horizontal.files-handle[data-resize-handle-active] { background: var(--term-bg); }
+/* 光标只在小胶囊上变成上下箭头。整条 26px 都显示 row-resize 的话，鼠标刚离开终端最后一行
+   还没进文件列表就已经是「可拖高度」的样子，像是误触。拖动仍然可以抓这一条，胶囊是明示的把手。 */
+.files-toggle-bar.files-handle { cursor: default; }
+.files-toggle-bar .files-grip { cursor: row-resize; }
 /* 收起 / 展开按钮完全同款：常亮的小胶囊 + 单个箭头，居中、始终可见 */
 .files-grip {
   z-index: 7; display: flex; align-items: center; justify-content: center;
@@ -464,6 +468,9 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .tf-path-edit { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 6px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg); transition: border-color .14s ease; }
 .tf-path-edit:focus-within { border-color: var(--accent); }
 .tf-path-input { flex: 1; min-width: 0; height: 22px; border: none; outline: none; background: transparent; color: var(--text-1); font-family: var(--font-mono); font-size: var(--text-xs); }
+/* 输入框本身不要焦点光晕：光晕会往左溢出盖住「本地 / 远程」标签，
+   外层的 .tf-path-edit 已经有 focus-within 边框做反馈 */
+.tf-path-input:focus { box-shadow: none; }
 .tf-path-input::placeholder { color: var(--muted); }
 .tf-path-go { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border: none; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); cursor: pointer; transition: background .14s ease, color .14s ease; }
 .tf-path-go:hover { background: var(--accent); color: var(--bg); }
@@ -768,6 +775,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .editor-files-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 6px; }
 .editor-file-item { display: flex; align-items: center; gap: 4px; height: 30px; padding: 0 6px 0 10px; border-radius: var(--r-md); color: var(--text-2); font-size: var(--text-sm); cursor: pointer; }
 .editor-file-item:hover { background: var(--line-soft); }
+/* 单击选中：只给一点底色，不抢当前打开文件的强调色 */
+.editor-file-item.picked:not(.active) { background: var(--line-soft); color: var(--text-1); }
 .editor-file-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
 .editor-file-item > span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .editor-file-item .icon-btn { opacity: 0; }

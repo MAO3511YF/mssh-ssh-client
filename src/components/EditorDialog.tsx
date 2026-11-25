@@ -142,6 +142,8 @@ export function EditorDialogContent({ onClose }: Props) {
   const [entries, setEntries] = useState<RemoteFileEntry[]>([]);
   const [loadingDir, setLoadingDir] = useState(false);
   const [openingPath, setOpeningPath] = useState<string | null>(null);
+  // 左栏远程目录沿用「单击选中、双击打开」的规则，和文件面板保持一致，避免误点就换文件
+  const [pickedPath, setPickedPath] = useState<string | null>(null);
 
   const [remote, setRemote] = useState<RemoteEdit | null>(kept.remote);
   const [draftId, setDraftId] = useState<string | null>(kept.draftId);
@@ -632,10 +634,10 @@ export function EditorDialogContent({ onClose }: Props) {
               return (
                 <div
                   key={`${e.type}:${path}`}
-                  className={`editor-file-item ${isOpen ? "active" : ""}`}
-                  title={path}
-                  onClick={() => {
-                    // 单击即进入目录 / 打开文件：这里只有"打开代码"一个用途，不再设双击门槛
+                  className={`editor-file-item ${isOpen ? "active" : ""} ${pickedPath === path ? "picked" : ""}`}
+                  title={`${path}\n单击选中，双击${e.type === "dir" ? "进入目录" : "打开文件"}`}
+                  onClick={() => setPickedPath(path)}
+                  onDoubleClick={() => {
                     if (e.type === "dir") void loadDir(path);
                     else guarded({ kind: "open", path }, () => void openRemote(path));
                   }}
